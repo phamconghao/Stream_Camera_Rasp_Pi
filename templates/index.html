@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+    <title>Camera Control</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #1e1e2f;
+            color: white;
+            text-align: center;
+        }
+        h1 {
+            margin-top: 20px;
+        }
+        .container {
+            margin-top: 40px;
+        }
+        button {
+            padding: 15px 30px;
+            margin: 10px;
+            font-size: 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .start { background: #28a745; }
+        .stop { background: #dc3545; }
+        .status { background: #007bff; }
+        .snapshot { background: #ffc107; color: black; }
+
+```
+    img {
+        margin-top: 20px;
+        border: 3px solid white;
+        width: 640px;
+    }
+</style>
+```
+
+</head>
+
+<body>
+
+<h1>📷 Camera Control Panel</h1>
+
+<div class="container">
+    <button class="start" onclick="callAPI('/start')">Start</button>
+    <button class="stop" onclick="callAPI('/stop')">Stop</button>
+    <button class="status" onclick="callAPI('/status')">Status</button>
+    <button class="snapshot" onclick="callAPI('/snapshot')">Snapshot</button>
+</div>
+
+<h2 id="result"></h2>
+
+<img src="/stream" />
+
+<script>
+function callAPI(endpoint) {
+    fetch(endpoint)
+        .then(res => res.text())
+        .then(data => {
+            document.getElementById("result").innerText = data;
+        });
+}
+</script>
+
+</body>
+</html>
+
