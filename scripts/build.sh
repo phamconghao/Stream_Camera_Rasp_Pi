@@ -19,6 +19,8 @@ src/capture/capture_thread.c \
 src/stream/stream_thread.c \
 src/queue/frame_queue.c \
 src/utils/signal_handler.c \
+src/shared/shared_frame.c \
+src/network/client_thread.c \
 -o build/camera_app \
 -lpthread
 

@@ -7,6 +7,7 @@
 #include "capture_thread.h"
 #include "stream_thread.h"
 #include "v4l2_capture.h"
+#include "shared_frame.h"
 
 volatile int running = 1;
 
@@ -24,7 +25,7 @@ int main(void)
     signal(SIGINT,
            signal_handler);
 
-    queue_init(&frame_q);
+    shared_frame_init();
 
     if (capture_init("/dev/video0") < 0)
     {
@@ -53,13 +54,6 @@ int main(void)
                    NULL,
                    stream_thread_func,
                    NULL);
-
-    while (running)
-    {
-        sleep(2);
-
-        queue_print_stats(&frame_q);
-    }
 
     pthread_join(capture_thread,
                  NULL);

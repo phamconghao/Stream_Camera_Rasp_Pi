@@ -2,12 +2,10 @@
 #include <time.h>
 
 #include "capture_thread.h"
-#include "frame_queue.h"
+#include "shared_frame.h"
 #include "v4l2_capture.h"
 
 extern volatile int running;
-
-extern struct frame_queue frame_q;
 
 void *capture_thread_func(void *arg)
 {
@@ -23,8 +21,7 @@ void *capture_thread_func(void *arg)
 
         struct timespec ts;
 
-        clock_gettime(CLOCK_MONOTONIC,
-                      &ts);
+        clock_gettime(CLOCK_MONOTONIC, &ts);
 
         if (capture_get_frame(&frame,
                               &size,
@@ -33,16 +30,9 @@ void *capture_thread_func(void *arg)
             continue;
         }
 
-        printf("[CAPTURE] ptr=%p size=%zu index=%d\n",
-               frame,
-               size,
-               index);
+        printf("[CAPTURE] ptr=%p size=%zu index=%d\n", frame, size, index);
 
-        queue_push(&frame_q,
-                   frame,
-                   size,
-                   index,
-                   &ts);
+        shared_frame_update(frame, size, index, &ts);
     }
 
     return NULL;
