@@ -1,123 +1,97 @@
-#include "frame_queue.h"
-#include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
 
-// ===========================================
-//                  INIT
-// ===========================================
+#include "frame_queue.h"
+
 void queue_init(struct frame_queue *q)
 {
-    q->head = 0;
-    q->tail = 0;
-    q->count = 0;
-    q->pushed_frames = 0;
-    q->popped_frames = 0;
-    q->dropped_frames = 0;
+    memset(q,
+           0,
+           sizeof(*q));
 
-    pthread_mutex_init(&q->mutex, NULL);
-    pthread_cond_init(&q->cond, NULL);
-    
-    /*
-    for (int i = 0; i < QUEUE_SIZE; i++)
-    {
-        q->frames[i].data = malloc(MAX_FRAME_SIZE);
+    pthread_mutex_init(&q->mutex,
+                       NULL);
 
-        if (!q->frames[i].data)
-        {
-            printf("malloc failed\n");
-            exit(1);
-        }
-    }
-    */
+    pthread_cond_init(&q->cond,
+                      NULL);
 }
 
-// ===========================================
-//                  PUSH 
-// ===========================================
-int queue_push(struct frame_queue *q, void *data, int size, int buffer_index, struct timespec *ts)
+int queue_push(struct frame_queue *q,
+               void *data,
+               int size,
+               int buffer_index,
+               struct timespec *ts)
 {
     pthread_mutex_lock(&q->mutex);
 
-    // ---------------------------------
-    // Queue full
-    // Drop oldest frame
-    // ---------------------------------
     if (q->count == QUEUE_SIZE)
     {
-        printf("[QUEUE FULL] dropping oldest frame\n");
+        printf("[QUEUE FULL] dropping frame\n");
 
-        q->head = (q->head + 1) % QUEUE_SIZE;
+        q->head =
+            (q->head + 1) % QUEUE_SIZE;
+
         q->count--;
+
         q->dropped_frames++;
     }
 
-    /*
-    if (size > MAX_FRAME_SIZE)
-    {
-        printf("Frame too large\n");
-        pthread_mutex_unlock(&q->mutex);
+    struct frame *f =
+        &q->frames[q->tail];
 
-        return -1;
-    }
-    */
+    f->data = data;
 
-    // ---------------------------------
-    // Copy frame 
-    // ---------------------------------
-    q->frames[q->tail].data = data;
-    q->frames[q->tail].size = size;
-    q->frames[q->tail].buffer_index = buffer_index;
-    q->frames[q->tail].timestamp = *ts;
+    f->size = size;
 
-    printf("\n[QUEUE STORE]\n");
-    printf("slot    = %d\n", q->tail);
-    printf("ptr     = %p\n", data);
-    printf("size    = %d\n", size);
-    printf("index   = %d\n", buffer_index);
+    f->buffer_index = buffer_index;
 
-    // ---------------------------------
-    // Update ring buffer 
-    // ---------------------------------
-    q->tail = (q->tail + 1) % QUEUE_SIZE;
+    f->timestamp = *ts;
+
+    printf("[QUEUE STORE] slot=%d ptr=%p size=%d index=%d\n",
+           q->tail,
+           data,
+           size,
+           buffer_index);
+
+    q->tail =
+        (q->tail + 1) % QUEUE_SIZE;
+
     q->count++;
+
     q->pushed_frames++;
 
     pthread_cond_signal(&q->cond);
+
     pthread_mutex_unlock(&q->mutex);
 
     return 0;
 }
 
-// ===========================================
-//                  POP 
-// ===========================================
-int queue_pop(struct frame_queue *q, struct frame *out)
+int queue_pop(struct frame_queue *q,
+              struct frame *out)
 {
     pthread_mutex_lock(&q->mutex);
 
     while (q->count == 0)
     {
-        pthread_cond_wait(&q->cond, &q->mutex);
+        pthread_cond_wait(&q->cond,
+                          &q->mutex);
     }
 
-    // ---------------------------------
-    // Copy frame out 
-    // ---------------------------------
-    *out = q->frames[q->head];
+    *out =
+        q->frames[q->head];
 
-    printf("\n[QUEUE LOAD]\n");
-    printf("slot    = %d\n", q->head);
-    printf("ptr     = %p\n", out->data);
-    printf("size    = %d\n", out->size);
-    printf("index   = %d\n", out->buffer_index);
+    printf("[QUEUE LOAD] slot=%d ptr=%p size=%d index=%d\n",
+           q->head,
+           out->data,
+           out->size,
+           out->buffer_index);
 
-    // ---------------------------------
-    // Update ring buffer 
-    // ---------------------------------
-    q->head = (q->head + 1) % QUEUE_SIZE;
+    q->head =
+        (q->head + 1) % QUEUE_SIZE;
 
     q->count--;
+
     q->popped_frames++;
 
     pthread_mutex_unlock(&q->mutex);
@@ -128,12 +102,22 @@ int queue_pop(struct frame_queue *q, struct frame *out)
 void queue_print_stats(struct frame_queue *q)
 {
     pthread_mutex_lock(&q->mutex);
-    printf("\n==================== STATS ==================\n");
-    printf("Queue count     = %d\n", q->count);
-    printf("Frames pushed   = %lu\n", q->pushed_frames);
-    printf("Frames popped   = %lu\n", q->popped_frames);
-    printf("Frames dropped  = %lu\n", q->dropped_frames);
-    printf("===============================================\n");
+
+    printf("\n============== STATS ==============\n");
+
+    printf("Queue count     : %d\n",
+           q->count);
+
+    printf("Frames pushed   : %lu\n",
+           q->pushed_frames);
+
+    printf("Frames popped   : %lu\n",
+           q->popped_frames);
+
+    printf("Frames dropped  : %lu\n",
+           q->dropped_frames);
+
+    printf("===================================\n");
 
     pthread_mutex_unlock(&q->mutex);
 }

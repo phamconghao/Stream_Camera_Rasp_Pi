@@ -1,75 +1,72 @@
-#include "v4l2_capture.h"
+#include <stdio.h>
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
+
 #include "frame_queue.h"
 #include "capture_thread.h"
 #include "stream_thread.h"
-#include "signal_handler.h"
+#include "v4l2_capture.h"
 
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
+volatile int running = 1;
 
-int main()
+struct frame_queue frame_q;
+
+static void signal_handler(int sig)
 {
-    struct frame_queue *queue = malloc(sizeof(struct frame_queue));
-    if (!queue)
-    {
-        printf("Queue Mallocation failed\n");
-        return -1;
-    }
-    queue_init(queue);
-    
-    setup_signals();
+    (void)sig;
 
-    // ------------------------
-    // Camera init
-    // ------------------------
+    running = 0;
+}
+
+int main(void)
+{
+    signal(SIGINT,
+           signal_handler);
+
+    queue_init(&frame_q);
+
     if (capture_init("/dev/video0") < 0)
     {
         printf("capture_init failed\n");
+
         return -1;
     }
-    
-    printf("capture_init OK\n");
 
     if (capture_start() < 0)
     {
-        printf("capture_init failed\n");
-        return -1;
-    }
-    printf("capture_start OK\n");
+        printf("capture_start failed\n");
 
-    // ------------------------
-    // Threads 
-    // ------------------------
-    if (capture_thread_start(queue) < 0)
-    {
         return -1;
     }
 
-    if (stream_thread_start(queue) < 0)
+    pthread_t capture_thread;
+
+    pthread_t stream_thread;
+
+    pthread_create(&capture_thread,
+                   NULL,
+                   capture_thread_func,
+                   NULL);
+
+    pthread_create(&stream_thread,
+                   NULL,
+                   stream_thread_func,
+                   NULL);
+
+    while (running)
     {
-        return -1;
+        sleep(2);
+
+        queue_print_stats(&frame_q);
     }
 
-    // ------------------------
-    // Main loop 
-    // ------------------------
-    while (1)
-    {
-        sleep(1);
+    pthread_join(capture_thread,
+                 NULL);
 
-        printf("\n");
-        printf("============== STATS ===============\n");
-        printf("Queue count     : %d\n", queue->count);
-        printf("Frames pushed   : %lu\n", queue->pushed_frames);
-        printf("Frames popped   : %lu\n", queue->popped_frames);
-        printf("Frames dropped  : %lu\n", queue->dropped_frames);
-        printf("====================================\n");
-    }
+    pthread_join(stream_thread,
+                 NULL);
 
-    capture_thread_stop();
-    stream_thread_stop();
-    capture_stop();
     capture_close();
 
     return 0;

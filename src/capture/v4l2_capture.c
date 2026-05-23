@@ -44,6 +44,7 @@ int capture_init(const char *device)
     fmt.fmt.pix.width = WIDTH;
     fmt.fmt.pix.height = HEIGHT;
     fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+    fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
     if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0)
     {
@@ -160,7 +161,7 @@ void capture_release_frame(int index)
     buf.memory = V4L2_MEMORY_MMAP;
     buf.index = index;
 
-    if (ioctl(fd, VIDIOC_QBUF, buf) < 0)
+    if (ioctl(fd, VIDIOC_QBUF, &buf) < 0)
     {
         perror("VIDIOC_QBUF");
     }
