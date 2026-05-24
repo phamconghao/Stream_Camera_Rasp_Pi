@@ -8,6 +8,7 @@
 #include "client_thread.h"
 #include "shared_frame.h"
 #include "v4l2_capture.h"
+#include "frame_pool.h"
 
 extern volatile int running;
 
@@ -73,6 +74,8 @@ void *client_thread_func(void *arg)
             continue;
         }
 
+        frame_acquire(frame.buffer_index);
+
         if (frame.frame_id == last_frame_id)
         {
             usleep(1000);
@@ -115,8 +118,9 @@ void *client_thread_func(void *arg)
                             + (now.tv_nsec - frame.timestamp.tv_nsec) / 1000000.0;
 
         printf("[LATENCY]: %.2f ms\n", latency_ms);
-
-        capture_release_frame(frame.buffer_index);
+        
+        
+        frame_release(frame.buffer_index);
     }
 
     printf("Browser disconnected\n");

@@ -4,6 +4,7 @@
 #include "capture_thread.h"
 #include "shared_frame.h"
 #include "v4l2_capture.h"
+#include "frame_pool.h"
 
 extern volatile int running;
 
@@ -32,6 +33,7 @@ void *capture_thread_func(void *arg)
 
         printf("[CAPTURE] ptr=%p size=%zu index=%d\n", frame, size, index);
 
+        frame_acquire(index);
         shared_frame_update(frame, size, index, &ts);
     }
 
