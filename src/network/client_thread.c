@@ -74,10 +74,9 @@ void *client_thread_func(void *arg)
             continue;
         }
 
-        frame_acquire(frame.buffer_index);
-
         if (frame.frame_id == last_frame_id)
         {
+            frame_release(frame.buffer_index);
             usleep(1000);
             continue;
         }
@@ -95,17 +94,23 @@ void *client_thread_func(void *arg)
 
         if (send_all(client_fd, part_header, len) < 0)
         {
-            break;
+            frame_release(frame.buffer_index);
+            printf("[SEND FAILED]\n");
+            goto disconnect;
         }
 
         if (send_all(client_fd, frame.data, frame.size) < 0)
         {
-            break;
+            frame_release(frame.buffer_index);
+            printf("[SEND FAILED]\n");
+            goto disconnect;
         }
 
         if (send_all(client_fd, "\r\n\r\n", 4) < 0)
         {
-            break;
+            frame_release(frame.buffer_index);
+            printf("[SEND FAILED]\n");
+            goto disconnect;
         }
 
         printf("[CLIENT] frame=%lu size=%d\n", frame.frame_id, frame.size);
@@ -127,5 +132,10 @@ void *client_thread_func(void *arg)
 
     close(client_fd);
 
+    return NULL;
+
+disconnect:
+    printf("[CLIENT DISCONNECTED]\n");
+    close(client_fd);
     return NULL;
 }

@@ -75,7 +75,8 @@ int shared_frame_get(struct shared_frame *out)
 
         return -1;
     }
-
+    
+    frame_acquire(g_frame.buffer_index);
     *out = g_frame;
 
     pthread_rwlock_unlock(&g_frame.lock);

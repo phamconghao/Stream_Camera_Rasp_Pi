@@ -8,6 +8,7 @@
 #include "stream_thread.h"
 #include "v4l2_capture.h"
 #include "shared_frame.h"
+#include "frame_pool.h"
 
 volatile int running = 1;
 
@@ -22,10 +23,11 @@ static void signal_handler(int sig)
 
 int main(void)
 {
-    signal(SIGINT,
-           signal_handler);
+    signal(SIGINT, signal_handler);
+    signal(SIGPIPE, SIG_IGN);
 
     shared_frame_init();
+    frame_pool_init();
 
     if (capture_init("/dev/video0") < 0)
     {

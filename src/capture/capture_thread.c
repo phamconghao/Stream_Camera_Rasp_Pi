@@ -30,6 +30,9 @@ void *capture_thread_func(void *arg)
         {
             continue;
         }
+        unsigned char *p = frame;
+        printf("JPEG header: %02x %02x %02x %02x\n",
+               p[0], p[1], p[2], p[3]);
 
         printf("[CAPTURE] ptr=%p size=%zu index=%d\n", frame, size, index);
 
