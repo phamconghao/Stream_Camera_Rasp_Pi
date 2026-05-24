@@ -6,6 +6,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <linux/videodev2.h>
+#include <errno.h>
+
 #include "v4l2_capture.h"
 
 #define WIDTH 640
@@ -50,6 +52,22 @@ int capture_init(const char *device)
     {
         perror("VIDIOC_S_FMT");
         return -1;
+    }
+
+    // Set FPS
+    struct v4l2_streamparm parm;
+    memset(&parm, 0, sizeof(parm));
+    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    parm.parm.capture.timeperframe.numerator = 1;
+    parm.parm.capture.timeperframe.denominator = 30;
+
+    if (ioctl(fd, VIDIOC_S_PARM, &parm) < 0)
+    {
+        perror("VIDIOC_S_PARM");
+    }
+    else
+    {
+        printf("[FPS SET] %d FPS\n", parm.parm.capture.timeperframe.denominator / parm.parm.capture.timeperframe.numerator);
     }
 
     // Request buffers

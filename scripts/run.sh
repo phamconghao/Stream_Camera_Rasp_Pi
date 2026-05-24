@@ -2,4 +2,4 @@
 
 set -e
 
-./build/camera_app
+sudo ./build/camera_app

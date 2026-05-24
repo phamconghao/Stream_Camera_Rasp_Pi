@@ -21,7 +21,7 @@ void frame_acquire(int index)
     pthread_mutex_lock(&slots[index].lock);
     slots[index].ref_count++;
 
-    printf("[ACQUIRE] buffer=%d ref=%d\n", index, slots[index].ref_count);
+    // printf("[ACQUIRE] buffer=%d ref=%d\n", index, slots[index].ref_count);
 
     pthread_mutex_unlock(&slots[index].lock);
 }
@@ -32,7 +32,7 @@ void frame_release(int index)
     pthread_mutex_lock(&slots[index].lock);
     slots[index].ref_count--;
 
-    printf("[RELEASE] buffer=%d ref=%d\n", index, slots[index].ref_count);
+    // printf("[RELEASE] buffer=%d ref=%d\n", index, slots[index].ref_count);
 
     if (slots[index].ref_count == 0)
     {

@@ -70,7 +70,7 @@ void *client_thread_func(void *arg)
 
         if (shared_frame_get(&frame) < 0)
         {
-            usleep(1000);
+            usleep(100);
             continue;
         }
 
