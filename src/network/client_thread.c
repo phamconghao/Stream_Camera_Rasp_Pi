@@ -97,15 +97,18 @@ void *client_thread_func(void *arg)
         if (shared_frame_get(&latest) == 0)
         {
             /**
-             * Nưer frame already arrived
+             * New frame already arrived
              */
             if (latest.frame_id != frame.frame_id)
             {
                 printf("[DROP STALE FRAME] current = %lu latest = %lu\n", frame.frame_id, latest.frame_id);
                 frame_release(frame.buffer_index);
+                frame_release(latest.buffer_index);
                 perf_frame_dropped();
                 continue;
             }
+
+            frame_release(latest.buffer_index);
         }
 
         if (send_all(client_fd, part_header, len) < 0)

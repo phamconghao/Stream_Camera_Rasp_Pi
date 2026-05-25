@@ -15,10 +15,7 @@ void *stream_thread_func(void *arg)
 {
     (void)arg;
 
-    int server_fd =
-        socket(AF_INET,
-               SOCK_STREAM,
-               0);
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     int opt = 1;
 

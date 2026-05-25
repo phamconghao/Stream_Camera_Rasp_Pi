@@ -54,20 +54,19 @@ void *capture_thread_func(void *arg)
 
         struct timespec ts;
 
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-
-        if (capture_get_frame(&frame,
-                              &size,
-                              &index) < 0)
+        
+        if (capture_get_frame(&frame, &size, &index) < 0)
         {
             continue;
         }
+
+        clock_gettime(CLOCK_MONOTONIC, &ts);
 
         unsigned char *p = frame;
         printf("JPEG header: %02x %02x %02x %02x\n",
                p[0], p[1], p[2], p[3]);
 
-        printf("[CAPTURE] ptr=%p size=%zu index=%d\n", frame, size, index);
+        // printf("[CAPTURE] ptr=%p size=%zu index=%d\n", frame, size, index);
 
         frame_acquire(index);
         shared_frame_update(frame, size, index, &ts);
