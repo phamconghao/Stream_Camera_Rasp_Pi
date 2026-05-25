@@ -9,6 +9,7 @@
 #include "shared_frame.h"
 #include "v4l2_capture.h"
 #include "frame_pool.h"
+#include "perf_stats.h"
 
 extern volatile int running;
 
@@ -67,6 +68,7 @@ void *client_thread_func(void *arg)
     while (running)
     {
         struct shared_frame frame;
+        struct shared_frame latest;
 
         if (shared_frame_get(&frame) < 0)
         {
@@ -91,6 +93,20 @@ void *client_thread_func(void *arg)
                           "Content-Length: %d\r\n"
                           "\r\n",
                           frame.size);
+        
+        if (shared_frame_get(&latest) == 0)
+        {
+            /**
+             * Nưer frame already arrived
+             */
+            if (latest.frame_id != frame.frame_id)
+            {
+                printf("[DROP STALE FRAME] current = %lu latest = %lu\n", frame.frame_id, latest.frame_id);
+                frame_release(frame.buffer_index);
+                perf_frame_dropped();
+                continue;
+            }
+        }
 
         if (send_all(client_fd, part_header, len) < 0)
         {
@@ -114,6 +130,8 @@ void *client_thread_func(void *arg)
         }
 
         printf("[CLIENT] frame=%lu size=%d\n", frame.frame_id, frame.size);
+
+        perf_frame_sent();
 
         struct timespec now;
 

@@ -25,6 +25,7 @@ src/shared/frame_pool.c \
 src/stream/stream_thread.c \
 src/utils/signal_handler.c \
 src/utils/fps_counter.c \
+src/utils/perf_stats.c \
 -o build/camera_app
 
 echo ""
