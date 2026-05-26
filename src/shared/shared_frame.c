@@ -83,3 +83,9 @@ int shared_frame_get(struct shared_frame *out)
 
     return 0;
 }
+
+void shared_frame_cleanup(void)
+{
+    pthread_rwlock_destroy(&g_frame.lock);
+    printf("[SHARED FRAME CLEANUP]\n");
+}

@@ -9,9 +9,7 @@
 #include "frame_pool.h"
 #include "fps_counter.h"
 
-
-
-extern volatile int running;
+static volatile int running = 1;
 
 void *capture_thread_func(void *arg)
 {
@@ -74,4 +72,9 @@ void *capture_thread_func(void *arg)
     }
 
     return NULL;
+}
+
+void capture_thread_stop(void)
+{
+    running = 0;
 }

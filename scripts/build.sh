@@ -18,7 +18,7 @@ gcc \
 src/main.c \
 src/capture/v4l2_capture.c \
 src/capture/capture_thread.c \
-src/network/client_thread.c \
+src/network/client_manager.c \
 src/queue/frame_queue.c \
 src/shared/shared_frame.c \
 src/shared/frame_pool.c \

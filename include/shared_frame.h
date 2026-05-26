@@ -17,6 +17,7 @@ struct shared_frame
 void shared_frame_init(void);
 void shared_frame_update(void *data, int size, int buffer_index, struct timespec *ts);
 int shared_frame_get(struct shared_frame *out);
+void shared_frame_cleanup(void);
 
 extern struct shared_frame g_frame;
 

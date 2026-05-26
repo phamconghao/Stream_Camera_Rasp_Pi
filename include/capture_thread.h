@@ -2,5 +2,6 @@
 #define __CAPTURE_THREAD_H__
 
 void *capture_thread_func(void *arg);
+void capture_thread_stop(void);
 
 #endif

@@ -1,69 +1,117 @@
 #include <stdio.h>
-#include <pthread.h>
+#include <stdlib.h>
 #include <signal.h>
+#include <pthread.h>
 #include <unistd.h>
 
-#include "frame_queue.h"
 #include "capture_thread.h"
 #include "stream_thread.h"
-#include "v4l2_capture.h"
 #include "shared_frame.h"
 #include "frame_pool.h"
 
-volatile int running = 1;
+static volatile int running = 1;
 
-struct frame_queue frame_q;
+/*
+ * ============================================================
+ *                  SIGNAL HANDLER
+ * ============================================================
+ */
 
 static void signal_handler(int sig)
 {
     (void)sig;
 
+    printf("\n[CTRL+C]\n");
+
     running = 0;
+
+    stream_thread_stop();
+
+    capture_thread_stop();
 }
+
+/*
+ * ============================================================
+ *                          MAIN
+ * ============================================================
+ */
 
 int main(void)
 {
-    signal(SIGINT, signal_handler);
+    pthread_t capture_tid;
+
+    pthread_t stream_tid;
+
+    /*
+     * Ignore SIGPIPE
+     */
+
     signal(SIGPIPE, SIG_IGN);
 
+    /*
+     * Ctrl+C handler
+     */
+
+    signal(SIGINT, signal_handler);
+
+    /*
+     * Init shared frame
+     */
+
     shared_frame_init();
+
+    /*
+     * Init frame ownership pool
+     */
+
     frame_pool_init();
 
-    if (capture_init("/dev/video0") < 0)
+    /*
+     * Create capture thread
+     */
+
+    if (pthread_create(&capture_tid, NULL, capture_thread_func, NULL) != 0)
     {
-        printf("capture_init failed\n");
+        perror("pthread_create capture");
 
         return -1;
     }
 
-    if (capture_start() < 0)
+    /*
+     * Create stream thread
+     */
+
+    if (pthread_create(&stream_tid, NULL, stream_thread_func, NULL) != 0)
     {
-        printf("capture_start failed\n");
+        perror("pthread_create stream");
 
         return -1;
     }
 
-    pthread_t capture_thread;
+    /*
+     * Main loop
+     */
 
-    pthread_t stream_thread;
+    while (running)
+    {
+        sleep(1);
+    }
 
-    pthread_create(&capture_thread,
-                   NULL,
-                   capture_thread_func,
-                   NULL);
+    /*
+     * Wait threads
+     */
 
-    pthread_create(&stream_thread,
-                   NULL,
-                   stream_thread_func,
-                   NULL);
+    pthread_join(capture_tid, NULL);
 
-    pthread_join(capture_thread,
-                 NULL);
+    pthread_join(stream_tid, NULL);
 
-    pthread_join(stream_thread,
-                 NULL);
+    /*
+     * Cleanup
+     */
 
-    capture_close();
+    shared_frame_cleanup();
+
+    printf("[APP EXIT]\n");
 
     return 0;
 }
