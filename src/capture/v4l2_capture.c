@@ -21,6 +21,7 @@ struct buffer
 };
 
 static int fd = -1;
+static volatile int streaming = 0;
 static struct buffer buffers[BUFFER_COUNT];
 static struct v4l2_buffer current_buf;
 
@@ -140,6 +141,8 @@ int capture_start()
         return -1;
     }
 
+    streaming = 1;
+
     printf("Camera stream started\n");
     return 0;
 }
@@ -149,6 +152,11 @@ int capture_start()
 // =================================================
 int capture_get_frame(void **data, size_t *size, int *index)
 {
+    if (!streaming || fd < 0)
+    {
+        return -1;
+    }
+
     memset(&current_buf, 0, sizeof(current_buf));
     current_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     current_buf.memory = V4L2_MEMORY_MMAP;
@@ -156,6 +164,11 @@ int capture_get_frame(void **data, size_t *size, int *index)
     // Dequeue filled buffer
     if (ioctl(fd, VIDIOC_DQBUF, &current_buf) < 0)
     {
+        if (!streaming || errno == EINVAL)
+        {
+            return -1;
+        }
+
         printf("DQBUG fd = %d\n", fd);
         perror("VIDIOC_DQBUF");
         return -1;
@@ -173,6 +186,11 @@ int capture_get_frame(void **data, size_t *size, int *index)
 // ==================================================
 void capture_release_frame(int index)
 {
+    if (!streaming || fd < 0)
+    {
+        return;
+    }
+
     struct v4l2_buffer buf;
     memset(&buf, 0, sizeof(buf));
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -189,7 +207,14 @@ void capture_release_frame(int index)
 //                  STOP STREAM
 // ===================================================
 void capture_stop()
-{    
+{
+    if (!streaming || fd < 0)
+    {
+        return;
+    }
+
+    streaming = 0;
+
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
     ioctl(fd, VIDIOC_STREAMOFF, &type); 
 }
@@ -199,9 +224,16 @@ void capture_stop()
 // ====================================================
 void capture_close()
 {
+    capture_stop();
+
     for (int i = 0; i < BUFFER_COUNT; i++)
     {
-        munmap(buffers[i].start, buffers[i].length);
+        if (buffers[i].start && buffers[i].start != MAP_FAILED)
+        {
+            munmap(buffers[i].start, buffers[i].length);
+            buffers[i].start = NULL;
+            buffers[i].length = 0;
+        }
     }
 
     if (fd >= 0)

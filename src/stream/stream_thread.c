@@ -53,17 +53,44 @@ static int make_nonblocking(int fd)
 
 /*
  * ============================================================
- *                      SEND ALL
+ *                      CLIENT OUTPUT
  * ============================================================
  */
 
-static int send_all(int fd, const void *buffer, size_t size)
+static int client_queue_output(struct client_state *client,
+                               const void *buffer,
+                               size_t size,
+                               unsigned long frame_id)
 {
-    const char *ptr = buffer;
-
-    while (size > 0)
+    if (client->out_buf != NULL)
     {
-        ssize_t sent = send(fd,  ptr, size, MSG_NOSIGNAL);
+        return 0;
+    }
+
+    client->out_buf = malloc(size);
+
+    if (!client->out_buf)
+    {
+        return -1;
+    }
+
+    memcpy(client->out_buf, buffer, size);
+    client->out_size = size;
+    client->out_offset = 0;
+    client->pending_frame_id = frame_id;
+
+    return 0;
+}
+
+static int flush_client_output(struct client_state *client)
+{
+    while (client->out_buf != NULL &&
+           client->out_offset < client->out_size)
+    {
+        ssize_t sent = send(client->fd,
+                            client->out_buf + client->out_offset,
+                            client->out_size - client->out_offset,
+                            MSG_NOSIGNAL);
 
         if (sent < 0)
         {
@@ -81,9 +108,27 @@ static int send_all(int fd, const void *buffer, size_t size)
             return -1;
         }
 
-        ptr += sent;
+        if (sent == 0)
+        {
+            return -1;
+        }
 
-        size -= sent;
+        client->out_offset += sent;
+    }
+
+    if (client->out_buf != NULL)
+    {
+        if (client->pending_frame_id != 0)
+        {
+            client->last_frame_id = client->pending_frame_id;
+            perf_frame_sent();
+        }
+
+        free(client->out_buf);
+        client->out_buf = NULL;
+        client->out_size = 0;
+        client->out_offset = 0;
+        client->pending_frame_id = 0;
     }
 
     return 0;
@@ -112,49 +157,34 @@ static void remove_client(int client_fd)
  * ============================================================
  */
 
-static int send_latest_frame(int client_fd)
+static int prepare_latest_frame(struct client_state *client)
 {
     struct shared_frame frame;
-
-    struct shared_frame latest;
 
     char part_header[256];
 
     int len;
+    size_t total_size;
+    unsigned char *out_buf;
 
     /*
      * Get latest frame
      */
+
+    if (client->out_buf != NULL)
+    {
+        return 0;
+    }
 
     if (shared_frame_get(&frame) < 0)
     {
         return 0;
     }
 
-    /*
-     * Acquire ownership
-     */
-
-    frame_acquire(frame.buffer_index);
-
-    /*
-     * Check stale frame
-     */
-
-    if (shared_frame_get(&latest) == 0)
+    if (frame.frame_id == client->last_frame_id)
     {
-        if (latest.frame_id != frame.frame_id)
-        {
-            printf("[DROP STALE FRAME] current=%lu latest=%lu\n",
-                   frame.frame_id,
-                   latest.frame_id);
-
-            perf_frame_dropped();
-
-            frame_release(frame.buffer_index);
-
-            return 0;
-        }
+        frame_release(frame.buffer_index);
+        return 0;
     }
 
     /*
@@ -168,46 +198,31 @@ static int send_latest_frame(int client_fd)
                    "Content-Length: %d\r\n\r\n",
                    frame.size);
 
-    /*
-     * Send multipart header
-     */
-
-    if (send_all(client_fd,
-                 part_header,
-                 len) < 0)
+    if (len < 0 || (size_t)len >= sizeof(part_header))
     {
         frame_release(frame.buffer_index);
 
         return -1;
     }
 
-    /*
-     * Send JPEG payload
-     */
+    total_size = (size_t)len + (size_t)frame.size + 2;
+    out_buf = malloc(total_size);
 
-    if (send_all(client_fd,
-                 frame.data,
-                 frame.size) < 0)
+    if (!out_buf)
     {
         frame_release(frame.buffer_index);
 
         return -1;
     }
 
-    /*
-     * Send multipart tail
-     */
+    memcpy(out_buf, part_header, (size_t)len);
+    memcpy(out_buf + len, frame.data, (size_t)frame.size);
+    memcpy(out_buf + len + frame.size, "\r\n", 2);
 
-    if (send_all(client_fd,
-                 "\r\n\r\n",
-                 4) < 0)
-    {
-        frame_release(frame.buffer_index);
-
-        return -1;
-    }
-
-    perf_frame_sent();
+    client->out_buf = out_buf;
+    client->out_size = total_size;
+    client->out_offset = 0;
+    client->pending_frame_id = frame.frame_id;
 
     frame_release(frame.buffer_index);
 
@@ -367,6 +382,16 @@ void *stream_thread_func(void *arg)
         {
             int fd = events[i].data.fd;
 
+            if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
+            {
+                if (fd != server_fd)
+                {
+                    remove_client(fd);
+                }
+
+                continue;
+            }
+
             /*
              * New client
              */
@@ -394,7 +419,11 @@ void *stream_thread_func(void *arg)
 
                     make_nonblocking(client_fd);
 
-                    client_add(client_fd);
+                    if (client_add(client_fd) < 0)
+                    {
+                        close(client_fd);
+                        continue;
+                    }
 
                     /*
                      * Send HTTP header
@@ -407,8 +436,12 @@ void *stream_thread_func(void *arg)
                         "Cache-Control: private\r\n"
                         "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
 
-                    if (send_all(client_fd, header, strlen(header)) < 0)
+                    struct client_state *client = client_get(client_fd);
+
+                    if (!client ||
+                        client_queue_output(client, header, strlen(header), 0) < 0)
                     {
+                        client_remove(client_fd);
                         close(client_fd);
                         continue;
                     }
@@ -427,6 +460,7 @@ void *stream_thread_func(void *arg)
                     {
                         perror("epoll_ctl client");
 
+                        client_remove(client_fd);
                         close(client_fd);
 
                         continue;
@@ -439,7 +473,27 @@ void *stream_thread_func(void *arg)
                  * Writable client socket
                  */
 
-                if (send_latest_frame(fd) < 0)
+                struct client_state *client = client_get(fd);
+
+                if (!client)
+                {
+                    remove_client(fd);
+                    continue;
+                }
+
+                if (flush_client_output(client) < 0)
+                {
+                    remove_client(fd);
+                    continue;
+                }
+
+                if (prepare_latest_frame(client) < 0)
+                {
+                    remove_client(fd);
+                    continue;
+                }
+
+                if (flush_client_output(client) < 0)
                 {
                     remove_client(fd);
                 }
@@ -473,10 +527,12 @@ void stream_thread_stop(void)
     if (server_fd >= 0)
     {
         close(server_fd);
+        server_fd = -1;
     }
 
     if (epoll_fd >= 0)
     {
         close(epoll_fd);
+        epoll_fd = -1;
     }
 }

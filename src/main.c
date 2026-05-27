@@ -8,6 +8,7 @@
 #include "stream_thread.h"
 #include "shared_frame.h"
 #include "frame_pool.h"
+#include "v4l2_capture.h"
 
 static volatile int running = 1;
 
@@ -24,6 +25,8 @@ static void signal_handler(int sig)
     printf("\n[CTRL+C]\n");
 
     running = 0;
+
+    capture_stop();
 
     stream_thread_stop();
 
@@ -66,6 +69,25 @@ int main(void)
 
     frame_pool_init();
 
+    /**
+     * Init and start camera before capture thread calls VIDIOC_DQBUF
+     */
+    if (capture_init("/dev/video0") < 0)
+    {
+        printf("capture_init failed\n");
+
+        return -1;
+    }
+
+    if (capture_start() < 0)
+    {
+        printf("capture_start failed\n");
+
+        capture_close();
+
+        return -1;
+    }
+
     /*
      * Create capture thread
      */
@@ -97,6 +119,10 @@ int main(void)
         sleep(1);
     }
 
+    capture_stop();
+    stream_thread_stop();
+    capture_thread_stop();
+
     /*
      * Wait threads
      */
@@ -110,6 +136,8 @@ int main(void)
      */
 
     shared_frame_cleanup();
+
+    capture_close();
 
     printf("[APP EXIT]\n");
 

@@ -1,22 +1,36 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "client_manager.h"
 
-static int clients[MAX_CLIENTS];
+static struct client_state clients[MAX_CLIENTS];
 
 void client_manager_init(void)
 {
-    memset(clients, -1, sizeof(clients));
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        clients[i].fd = -1;
+        clients[i].last_frame_id = 0;
+        clients[i].pending_frame_id = 0;
+        clients[i].out_buf = NULL;
+        clients[i].out_size = 0;
+        clients[i].out_offset = 0;
+    }
 }
 
 int client_add(int fd)
 {
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
-        if (clients[i] == -1)
+        if (clients[i].fd == -1)
         {
-            clients[i] = fd;
+            clients[i].fd = fd;
+            clients[i].last_frame_id = 0;
+            clients[i].pending_frame_id = 0;
+            clients[i].out_buf = NULL;
+            clients[i].out_size = 0;
+            clients[i].out_offset = 0;
 
             printf("[CLIENT ADD] fd = %d\n", fd);
             return 0;
@@ -28,17 +42,21 @@ int client_add(int fd)
 
 void client_remove(int fd)
 {
-    for (int i = 0; i < MAX_CLIENTS; i++)
+    struct client_state *client = client_get(fd);
+    if (!client)
     {
-        if (clients[i] == fd)
-        {
-            clients[i] = -1;
-
-            printf("[CLIENT REMOVE] fd = %d\n", fd);
-            return;
-        }
-            
+        return;
     }
+    
+    free(client->out_buf);
+    client->fd = -1;
+    client->last_frame_id = 0;
+    client->pending_frame_id = 0;
+    client->out_buf = NULL;
+    client->out_size = 0;
+    client->out_offset = 0;
+
+    printf("[CLIENT REMOVE] fd = %d\n", fd);
 }
 
 int client_get_all(int *fds)
@@ -47,11 +65,24 @@ int client_get_all(int *fds)
 
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
-        if (clients[i] != -1)
+        if (clients[i].fd != -1)
         {
-            fds[count++] = clients[i];
+            fds[count++] = clients[i].fd;
         }
     }
 
     return count;
+}
+
+struct client_state *client_get(int fd)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].fd == fd)
+        {
+            return &clients[i];
+        }
+    }
+
+    return NULL;
 }
