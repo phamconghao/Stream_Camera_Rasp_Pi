@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #ifdef __cplusplus
 extern "C" {

@@ -3,10 +3,13 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <cstring>
 
 #include <libcamera/libcamera.h>
 
 #include "camera_capture.h"
+#include "raw_frame_pool.h"
+#include "raw_frame_queue.h"
 
 using namespace libcamera;
 static std::unique_ptr<CameraManager> g_camera_manager;
@@ -17,7 +20,23 @@ static Stream *g_stream;
 static std::vector<std::unique_ptr<Request>> g_requests;
 static bool g_running = false;
 static uint64_t g_frame_count = 0;
-// static std::mutex g_camera_mutex;
+static bool g_dumped = false;
+
+static void dump_frame(const void *data, size_t size)
+{
+    FILE *fp = fopen("frame_000.yuv", "wb");
+
+    if (!fp)
+    {
+        perror("fopen");
+        return;
+    }
+
+    fwrite(data, 1, size, fp);
+
+    fclose(fp);
+    std::cout << "[DUMP] frame_000.yuv (" << size << " bytes)" << std::endl;
+}
 
 static void request_complete(Request *request)
 {
@@ -35,15 +54,70 @@ static void request_complete(Request *request)
 
     g_frame_count++;
 
-    std::cout << "[CAPTURE] Frame #" << g_frame_count << std::endl;
+    std::cout << "[PRODUCER] Frame = " << g_frame_count << std::endl;
 
     const Request::BufferMap &buffers = request->buffers();
 
     for (auto const &pair : buffers)
     {
         FrameBuffer *buffer = pair.second;
+        raw_frame_t *frame = raw_frame_pool_acquire();
+        if (!frame)
+        {
+            std::cout << "[POOL] empty" << std::endl;
+
+            continue;
+        }
         const FrameMetadata &meta = buffer->metadata();
         std::cout << "[CAPTURE] byteused = " << meta.planes()[0].bytesused << std::endl;
+        
+        frame->pts_us = meta.timestamp / 1000;
+        frame->sequence = meta.sequence;
+        std::cout << "Plane count = " << buffer->planes().size() << std::endl;
+        size_t offset = 0;
+
+        for (size_t i = 0; i < buffer->planes().size(); i++)
+        {
+            const FrameBuffer::Plane &plane = buffer->planes()[i];
+            const FrameMetadata::Plane &meta_plane = meta.planes()[i];
+            void *memory = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED, plane.fd.get(), 0);
+            std::cout << "Plane " << i << " length = " << buffer->planes()[i].length << std::endl;
+            
+            if (memory == MAP_FAILED)
+            {
+                perror("mmap");
+                raw_frame_pool_release(frame);
+                frame = nullptr;
+                break;
+            }
+
+            memcpy(frame->data + offset, memory, meta_plane.bytesused);
+            offset += meta_plane.bytesused;
+            munmap(memory, plane.length);
+        }
+
+        if (!frame)
+        {
+            std::cout << "[POOL] empty" << std::endl;
+
+            continue;
+        }
+        frame->size = offset;
+
+        if (!g_dumped)
+        {
+            dump_frame(frame->data, frame->size);
+            g_dumped = true;
+        }
+
+        std::cout << "[PRODUCER] size = " << frame->size << " seq = " << frame->sequence << std::endl;
+
+        if (raw_frame_queue_push(frame) < 0)
+        {
+            std::cout << "[QUEUE] full" << std::endl;
+
+            raw_frame_pool_release(frame);
+        }
     }
 
     // Requeue requests

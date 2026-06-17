@@ -49,6 +49,8 @@ set(SOURCES
 
     src/frame/frame_pool.cpp
     src/frame/frame_queue.cpp
+    src/frame/raw_frame_pool.cpp
+    src/frame/raw_frame_queue.cpp
 )
 
 #
