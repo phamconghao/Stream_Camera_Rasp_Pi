@@ -1,16 +1,21 @@
 #include <iostream>
+#include <pthread.h>
+#include <atomic>
 
 #include "camera_capture.h"
 #include "raw_frame_pool.h"
 #include "raw_frame_queue.h"
+#include "encoded_frame_pool.h"
+#include "encoded_frame_queue.h"
+#include "encoder_thread.h"
 
-static std::atomic<bool> g_running(true);
+static std::atomic<bool> g_consumer_running(true);
 
 void *consumer_thread(void *)
 {
-    while (g_running)
+    while (g_consumer_running)
     {
-        raw_frame_t *frame = raw_frame_queue_pop();
+        encoded_frame_t *frame = encoded_frame_queue_pop();
 
         if (!frame)
         {
@@ -19,7 +24,7 @@ void *consumer_thread(void *)
 
         std::cout << "[CONSUMER] size = " << frame->size << " seq = " << frame->sequence << std::endl;
 
-        raw_frame_pool_release(frame);
+        encoded_frame_pool_release(frame);
     }
 
     return nullptr;
@@ -27,42 +32,43 @@ void *consumer_thread(void *)
 
 int main()
 {
-#if 0
-    if (camera_capture_init() < 0)
-    {
-        return -1;
-    }
-
     if (raw_frame_pool_init() < 0)
     {
         return -1;
     }
 
-    if (camera_capture_start() < 0)
+    if (raw_frame_queue_init() < 0)
     {
         return -1;
     }
 
-    std::cout << "Press Enter to exit..." << std::endl;
-    std::cin.get();
+    if (encoded_frame_pool_init() < 0)
+    {
+        return -1;
+    }
 
-    camera_capture_stop();
-    camera_capture_cleanup();
-    raw_frame_pool_cleanup();
-#else
-    raw_frame_pool_init();
-    raw_frame_queue_init();
+    if (encoded_frame_queue_init() < 0)
+    {
+        return -1;
+    }
+
     if (camera_capture_init() < 0)
     {
         return -1;
     }
-    
-    pthread_t tid;
-    pthread_create(&tid, nullptr, consumer_thread, nullptr);
+
+    pthread_t consumer_tid;
+
+    pthread_create(&consumer_tid, nullptr, consumer_thread, nullptr);
+
+    if (encoder_thread_start() < 0)
+    {
+        return -1;
+    }
 
     camera_capture_start();
 
-    std::cout << "Press ENTER to exit" << std::endl;
+    std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
 
@@ -70,8 +76,17 @@ int main()
 
     camera_capture_cleanup();
 
+    encoder_thread_stop();
+
+    g_consumer_running = false;
+
+    pthread_join( consumer_tid, nullptr);
+
+    encoded_frame_queue_cleanup();
+    encoded_frame_pool_cleanup();
+
     raw_frame_queue_cleanup();
     raw_frame_pool_cleanup();
-#endif
+
     return 0;
 }

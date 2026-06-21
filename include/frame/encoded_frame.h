@@ -12,7 +12,7 @@ typedef struct
     uint8_t *data;
     size_t size;
     uint64_t pts_us;
-    int is_keyframe;
+    uint32_t sequence;
     std::atomic<int> ref_count;
 } encoded_frame_t;
 

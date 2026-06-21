@@ -33,6 +33,7 @@ include_directories(
     include
 
     include/capture
+    include/encoder
     include/frame
 
     ${LIBCAMERA_INCLUDE_DIRS}
@@ -46,11 +47,15 @@ set(SOURCES
     src/main.cpp
 
     src/capture/camera_capture.cpp
+    
+    src/encoder/encoder_thread.cpp
 
     src/frame/frame_pool.cpp
     src/frame/frame_queue.cpp
     src/frame/raw_frame_pool.cpp
     src/frame/raw_frame_queue.cpp
+    src/frame/encoded_frame_pool.cpp
+    src/frame/encoded_frame_queue.cpp
 )
 
 #
