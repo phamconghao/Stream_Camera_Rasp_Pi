@@ -10,6 +10,7 @@
 #include "encoded_frame_pool.h"
 #include "encoded_frame_queue.h"
 #include "encoder_thread.h"
+#include "bcm2835_encoder.h"
 
 static pthread_t g_encoder_thread;
 static std::atomic<bool> g_running(false);
@@ -36,18 +37,27 @@ static void *encoder_thread_func(void *arg)
             continue;
         }
 
-        memcpy(encoded->data, raw->data, raw->size);
-        encoded->size = raw->size;
-        encoded->pts_us = raw->pts_us;
-        encoded->sequence = raw->sequence;
+        // memcpy(encoded->data, raw->data, raw->size);
+        // encoded->size = raw->size;
+        // encoded->pts_us = raw->pts_us;
+        // encoded->sequence = raw->sequence;
 
-        std::cout << "[ENCODER] seq = " << encoded->sequence << " size = " << encoded->size << std::endl;
+        // std::cout << "[ENCODER] seq = " << encoded->sequence << " size = " << encoded->size << std::endl;
 
-        if (encoded_frame_queue_push(encoded) < 0)
+        if (bcm2835_encoder_encode_frame(raw, encoded) == 0)
         {
-            std::cout << "[ENCODER] queue full" << std::endl;
+            if (encoded_frame_queue_push(encoded) < 0)
+            {
+                std::cout << "[ENC] queue full" << std::endl;
+                encoded_frame_pool_release(encoded);
+            }
+        }
+        else
+        {
             encoded_frame_pool_release(encoded);
         }
+
+        std::cout << "[ENC] frame encoded size = " << encoded->size << std::endl;
         
         raw_frame_pool_release(raw);
     }

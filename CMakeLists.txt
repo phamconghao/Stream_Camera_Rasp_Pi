@@ -35,6 +35,7 @@ include_directories(
     include/capture
     include/encoder
     include/frame
+    include/writer
 
     ${LIBCAMERA_INCLUDE_DIRS}
 )
@@ -49,6 +50,7 @@ set(SOURCES
     src/capture/camera_capture.cpp
     
     src/encoder/encoder_thread.cpp
+    src/encoder/bcm2835_encoder.cpp
 
     src/frame/frame_pool.cpp
     src/frame/frame_queue.cpp
@@ -56,6 +58,8 @@ set(SOURCES
     src/frame/raw_frame_queue.cpp
     src/frame/encoded_frame_pool.cpp
     src/frame/encoded_frame_queue.cpp
+
+    src/writer/h264_writer.cpp
 )
 
 #

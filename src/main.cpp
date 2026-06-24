@@ -8,6 +8,8 @@
 #include "encoded_frame_pool.h"
 #include "encoded_frame_queue.h"
 #include "encoder_thread.h"
+#include "bcm2835_encoder.h"
+#include "h264_writer.h"
 
 static std::atomic<bool> g_consumer_running(true);
 
@@ -52,14 +54,24 @@ int main()
         return -1;
     }
 
+    if (h264_writer_start() < 0)
+    {
+        return -1;
+    }
+
     if (camera_capture_init() < 0)
     {
         return -1;
     }
 
-    pthread_t consumer_tid;
+    if (bcm2835_encoder_init(640, 480) < 0)
+    {
+        return -1;
+    }
 
-    pthread_create(&consumer_tid, nullptr, consumer_thread, nullptr);
+    // pthread_t consumer_tid;
+
+    // pthread_create(&consumer_tid, nullptr, consumer_thread, nullptr);
 
     if (encoder_thread_start() < 0)
     {
@@ -72,21 +84,26 @@ int main()
 
     std::cin.get();
 
+    h264_writer_stop();
     camera_capture_stop();
 
-    camera_capture_cleanup();
+    // camera_capture_cleanup();
 
     encoder_thread_stop();
 
-    g_consumer_running = false;
+    // g_consumer_running = false;
 
-    pthread_join( consumer_tid, nullptr);
+    // pthread_join( consumer_tid, nullptr);
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
 
     raw_frame_queue_cleanup();
     raw_frame_pool_cleanup();
+
+    // bcm2835_encoder_encode_file("frame_000.yuv", "output.h264");
+
+    bcm2835_encoder_cleanup();
 
     return 0;
 }
