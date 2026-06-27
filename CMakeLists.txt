@@ -36,6 +36,7 @@ include_directories(
     include/encoder
     include/frame
     include/writer
+    include/parser
 
     ${LIBCAMERA_INCLUDE_DIRS}
 )
@@ -60,6 +61,8 @@ set(SOURCES
     src/frame/encoded_frame_queue.cpp
 
     src/writer/h264_writer.cpp
+
+    src/parser/h264_nal_parser.cpp
 )
 
 #

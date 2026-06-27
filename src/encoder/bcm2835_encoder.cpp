@@ -492,6 +492,7 @@ int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded)
     queue_capture_buffer(capture_index);
     encoded->size = bytes_used;
     encoded->pts_us = raw->pts_us;
+    encoded->sequence = raw->sequence;
 
     return 0;
 }

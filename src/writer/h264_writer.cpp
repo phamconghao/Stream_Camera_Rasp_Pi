@@ -7,6 +7,7 @@
 #include "encoded_frame_queue.h"
 #include "encoded_frame_pool.h"
 #include "h264_writer.h"
+#include "h264_nal_parser.h"
 
 static pthread_t g_thread;
 static bool g_running = false;
@@ -25,6 +26,20 @@ static void *writer_thread_func(void *arg)
             usleep(1000);
             continue;
         }
+
+        std::vector<h264_nal_t> nals;
+        h264_split_nals(frame->data, frame->size, nals);
+        for (auto &nal : nals)
+        {
+            std::cout << "[NAL] " << h264_nal_type_string(nal.nal_type) << " size = " << nal.size << std::endl;
+        }
+
+        for (int i = 0; i < 16; i++)
+        {
+            printf("%02X ", frame->data[i]);
+        }
+
+        printf("\n");
 
         fwrite(frame->data, 1, frame->size, g_fp);
 
