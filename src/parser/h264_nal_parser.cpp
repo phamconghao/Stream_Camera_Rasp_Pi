@@ -56,7 +56,6 @@ int h264_split_nals(uint8_t *data, size_t size, std::vector<h264_nal_t> &nals)
             break;
         }
 
-        int next = find_start_code(data, size, start + 4);
         size_t nal_start;
         size_t prefix_size;
 
@@ -70,6 +69,8 @@ int h264_split_nals(uint8_t *data, size_t size, std::vector<h264_nal_t> &nals)
         }
 
         nal_start = start + prefix_size;
+
+        int next = find_start_code(data, size, nal_start);
 
         size_t nal_end = (next < 0) ? size : (size_t)next;
 

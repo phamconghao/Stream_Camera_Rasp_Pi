@@ -83,5 +83,11 @@ int encoder_thread_start(void)
 void encoder_thread_stop(void)
 {
     g_running = false;
+
+    // Wake the thread up if it's blocked waiting for a raw frame,
+    // otherwise pthread_join below would hang forever once the
+    // camera has stopped producing frames.
+    raw_frame_queue_shutdown();
+
     pthread_join(g_encoder_thread, nullptr);
 }

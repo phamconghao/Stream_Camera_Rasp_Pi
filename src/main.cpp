@@ -82,24 +82,27 @@ int main()
 
     camera_capture_start();
 
-    pthread_t rtp_tid;
-    pthread_create(&rtp_tid, nullptr, rtp_packetizer_thread_func, nullptr);
+    if (rtp_packetizer_thread_start() < 0)
+    {
+        return -1;
+    }
 
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
 
-    pthread_join(rtp_tid, nullptr);
-    // h264_writer_stop();
+    // Stop in producer -> consumer order so each stage can drain and
+    // exit cleanly instead of deadlocking on a queue that will never
+    // receive another item:
+    //   1. Stop the camera (no more raw frames produced)
+    //   2. Stop the encoder thread (drains raw queue, then exits)
+    //   3. Stop the RTP thread (drains encoded queue, then exits)
     camera_capture_stop();
-
     // camera_capture_cleanup();
 
     encoder_thread_stop();
 
-    // g_consumer_running = false;
-
-    // pthread_join( consumer_tid, nullptr);
+    rtp_packetizer_thread_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();

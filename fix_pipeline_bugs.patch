@@ -1,0 +1,289 @@
+diff --git a/include/frame/encoded_frame_queue.h b/include/frame/encoded_frame_queue.h
+index e7f419a..bd118b4 100644
+--- a/include/frame/encoded_frame_queue.h
++++ b/include/frame/encoded_frame_queue.h
+@@ -11,4 +11,12 @@ int encoded_frame_queue_push(encoded_frame_t *frame);
+ encoded_frame_t *encoded_frame_queue_pop(void);
+ int encoded_frame_queue_count(void);
+ 
++/**
++ * Wake up any thread blocked in encoded_frame_queue_pop() so it can
++ * observe shutdown and exit instead of waiting forever. After this call,
++ * encoded_frame_queue_pop() returns nullptr immediately once the queue
++ * is empty.
++ */
++void encoded_frame_queue_shutdown(void);
++
+ #endif // __RAW_FRAME_QUEUE_H__
+\ No newline at end of file
+diff --git a/include/frame/raw_frame_queue.h b/include/frame/raw_frame_queue.h
+index e37c491..0e3b7dc 100644
+--- a/include/frame/raw_frame_queue.h
++++ b/include/frame/raw_frame_queue.h
+@@ -11,4 +11,11 @@ int raw_frame_queue_push(raw_frame_t *frame);
+ raw_frame_t *raw_frame_queue_pop(void);
+ int raw_frame_queue_count(void);
+ 
++/**
++ * Wake up any thread blocked in raw_frame_queue_pop() so it can observe
++ * shutdown and exit instead of waiting forever. After this call,
++ * raw_frame_queue_pop() returns nullptr immediately once the queue is empty.
++ */
++void raw_frame_queue_shutdown(void);
++
+ #endif // __RAW_FRAME_QUEUE_H__
+\ No newline at end of file
+diff --git a/include/rtp/rtp_packetizer_thread.h b/include/rtp/rtp_packetizer_thread.h
+index 5b358ea..67b5b19 100644
+--- a/include/rtp/rtp_packetizer_thread.h
++++ b/include/rtp/rtp_packetizer_thread.h
+@@ -1,6 +1,7 @@
+ #ifndef __RTP_PACKETIZER_THREAD_H__
+ #define __RTP_PACKETIZER_THREAD_H__
+ 
+-void *rtp_packetizer_thread_func(void *arg);
++int rtp_packetizer_thread_start(void);
++void rtp_packetizer_thread_stop(void);
+ 
+ #endif // __RTP_PACKETIZER_THREAD_H__
+\ No newline at end of file
+diff --git a/src/encoder/encoder_thread.cpp b/src/encoder/encoder_thread.cpp
+index e720884..da1200e 100644
+--- a/src/encoder/encoder_thread.cpp
++++ b/src/encoder/encoder_thread.cpp
+@@ -83,5 +83,11 @@ int encoder_thread_start(void)
+ void encoder_thread_stop(void)
+ {
+     g_running = false;
++
++    // Wake the thread up if it's blocked waiting for a raw frame,
++    // otherwise pthread_join below would hang forever once the
++    // camera has stopped producing frames.
++    raw_frame_queue_shutdown();
++
+     pthread_join(g_encoder_thread, nullptr);
+ }
+\ No newline at end of file
+diff --git a/src/frame/encoded_frame_queue.cpp b/src/frame/encoded_frame_queue.cpp
+index a6bf627..7b89413 100644
+--- a/src/frame/encoded_frame_queue.cpp
++++ b/src/frame/encoded_frame_queue.cpp
+@@ -8,6 +8,7 @@ typedef struct
+     int head;
+     int tail;
+     int count;
++    bool shutting_down;
+     pthread_mutex_t lock;
+     pthread_cond_t cond;
+ } encoded_frame_queue_ctx_t;
+@@ -19,6 +20,7 @@ int encoded_frame_queue_init(void)
+     g_queue.head = 0;
+     g_queue.tail = 0;
+     g_queue.count = 0;
++    g_queue.shutting_down = false;
+ 
+     pthread_mutex_init(&g_queue.lock, nullptr);
+     pthread_cond_init(&g_queue.cond, nullptr);
+@@ -54,11 +56,17 @@ encoded_frame_t *encoded_frame_queue_pop(void)
+ {
+     pthread_mutex_lock(&g_queue.lock);
+ 
+-    while (g_queue.count == 0)
++    while (g_queue.count == 0 && !g_queue.shutting_down)
+     {
+         pthread_cond_wait(&g_queue.cond, &g_queue.lock);
+     }
+ 
++    if (g_queue.count == 0 && g_queue.shutting_down)
++    {
++        pthread_mutex_unlock(&g_queue.lock);
++        return nullptr;
++    }
++
+     encoded_frame_t *frame = g_queue.frames[g_queue.head];
+     g_queue.head = (g_queue.head + 1) % ENCODED_FRAME_QUEUE_SIZE;
+     g_queue.count--;
+@@ -67,6 +75,14 @@ encoded_frame_t *encoded_frame_queue_pop(void)
+     return frame;
+ }
+ 
++void encoded_frame_queue_shutdown(void)
++{
++    pthread_mutex_lock(&g_queue.lock);
++    g_queue.shutting_down = true;
++    pthread_cond_broadcast(&g_queue.cond);
++    pthread_mutex_unlock(&g_queue.lock);
++}
++
+ int encoded_frame_queue_count(void)
+ {
+     pthread_mutex_lock(&g_queue.lock);
+diff --git a/src/frame/raw_frame_queue.cpp b/src/frame/raw_frame_queue.cpp
+index 1a66f49..e2aee32 100644
+--- a/src/frame/raw_frame_queue.cpp
++++ b/src/frame/raw_frame_queue.cpp
+@@ -8,6 +8,7 @@ typedef struct
+     int head;
+     int tail;
+     int count;
++    bool shutting_down;
+     pthread_mutex_t lock;
+     pthread_cond_t cond;
+ } raw_frame_queue_ctx_t;
+@@ -19,6 +20,7 @@ int raw_frame_queue_init(void)
+     g_queue.head = 0;
+     g_queue.tail = 0;
+     g_queue.count = 0;
++    g_queue.shutting_down = false;
+ 
+     pthread_mutex_init(&g_queue.lock, nullptr);
+     pthread_cond_init(&g_queue.cond, nullptr);
+@@ -54,11 +56,17 @@ raw_frame_t *raw_frame_queue_pop(void)
+ {
+     pthread_mutex_lock(&g_queue.lock);
+ 
+-    while (g_queue.count == 0)
++    while (g_queue.count == 0 && !g_queue.shutting_down)
+     {
+         pthread_cond_wait(&g_queue.cond, &g_queue.lock);
+     }
+ 
++    if (g_queue.count == 0 && g_queue.shutting_down)
++    {
++        pthread_mutex_unlock(&g_queue.lock);
++        return nullptr;
++    }
++
+     raw_frame_t *frame = g_queue.frames[g_queue.head];
+     g_queue.head = (g_queue.head + 1) % RAW_FRAME_QUEUE_SIZE;
+     g_queue.count--;
+@@ -67,6 +75,14 @@ raw_frame_t *raw_frame_queue_pop(void)
+     return frame;
+ }
+ 
++void raw_frame_queue_shutdown(void)
++{
++    pthread_mutex_lock(&g_queue.lock);
++    g_queue.shutting_down = true;
++    pthread_cond_broadcast(&g_queue.cond);
++    pthread_mutex_unlock(&g_queue.lock);
++}
++
+ int raw_frame_queue_count(void)
+ {
+     pthread_mutex_lock(&g_queue.lock);
+diff --git a/src/main.cpp b/src/main.cpp
+index 9986162..e0452a3 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -82,24 +82,27 @@ int main()
+ 
+     camera_capture_start();
+ 
+-    pthread_t rtp_tid;
+-    pthread_create(&rtp_tid, nullptr, rtp_packetizer_thread_func, nullptr);
++    if (rtp_packetizer_thread_start() < 0)
++    {
++        return -1;
++    }
+ 
+     std::cout << "Press ENTER to exit..." << std::endl;
+ 
+     std::cin.get();
+ 
+-    pthread_join(rtp_tid, nullptr);
+-    // h264_writer_stop();
++    // Stop in producer -> consumer order so each stage can drain and
++    // exit cleanly instead of deadlocking on a queue that will never
++    // receive another item:
++    //   1. Stop the camera (no more raw frames produced)
++    //   2. Stop the encoder thread (drains raw queue, then exits)
++    //   3. Stop the RTP thread (drains encoded queue, then exits)
+     camera_capture_stop();
+-
+     // camera_capture_cleanup();
+ 
+     encoder_thread_stop();
+ 
+-    // g_consumer_running = false;
+-
+-    // pthread_join( consumer_tid, nullptr);
++    rtp_packetizer_thread_stop();
+ 
+     encoded_frame_queue_cleanup();
+     encoded_frame_pool_cleanup();
+diff --git a/src/parser/h264_nal_parser.cpp b/src/parser/h264_nal_parser.cpp
+index 2af8520..9d1d545 100644
+--- a/src/parser/h264_nal_parser.cpp
++++ b/src/parser/h264_nal_parser.cpp
+@@ -56,7 +56,6 @@ int h264_split_nals(uint8_t *data, size_t size, std::vector<h264_nal_t> &nals)
+             break;
+         }
+ 
+-        int next = find_start_code(data, size, start + 4);
+         size_t nal_start;
+         size_t prefix_size;
+ 
+@@ -71,6 +70,8 @@ int h264_split_nals(uint8_t *data, size_t size, std::vector<h264_nal_t> &nals)
+ 
+         nal_start = start + prefix_size;
+ 
++        int next = find_start_code(data, size, nal_start);
++
+         size_t nal_end = (next < 0) ? size : (size_t)next;
+ 
+         h264_nal_t nal;
+diff --git a/src/rtp/rtp_packetizer_thread.cpp b/src/rtp/rtp_packetizer_thread.cpp
+index f639154..80ef105 100644
+--- a/src/rtp/rtp_packetizer_thread.cpp
++++ b/src/rtp/rtp_packetizer_thread.cpp
+@@ -1,4 +1,6 @@
+ #include <iostream>
++#include <pthread.h>
++#include <atomic>
+ 
+ #include "encoded_frame.h"
+ #include "encoded_frame_pool.h"
+@@ -6,9 +8,10 @@
+ #include "rtp_packetizer_thread.h"
+ #include "h264_nal_parser.h"
+ 
+-extern bool g_running;
++static pthread_t g_rtp_thread;
++static std::atomic<bool> g_running(false);
+ 
+-void *rtp_packetizer_thread_func(void *arg)
++static void *rtp_packetizer_thread_func(void *arg)
+ {
+     (void)arg;
+ 
+@@ -42,4 +45,28 @@ void *rtp_packetizer_thread_func(void *arg)
+     std::cout << "[RTP] thread exit" << std::endl;
+ 
+     return nullptr;
++}
++
++int rtp_packetizer_thread_start(void)
++{
++    g_running = true;
++
++    if (pthread_create(&g_rtp_thread, nullptr, rtp_packetizer_thread_func, nullptr) != 0)
++    {
++        perror("pthread_create");
++        return -1;
++    }
++
++    return 0;
++}
++
++void rtp_packetizer_thread_stop(void)
++{
++    g_running = false;
++
++    // Wake the thread up if it's blocked waiting for an encoded frame,
++    // otherwise pthread_join below would hang forever.
++    encoded_frame_queue_shutdown();
++
++    pthread_join(g_rtp_thread, nullptr);
+ }
+\ No newline at end of file

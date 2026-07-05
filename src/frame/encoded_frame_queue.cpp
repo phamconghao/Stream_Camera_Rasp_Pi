@@ -8,6 +8,7 @@ typedef struct
     int head;
     int tail;
     int count;
+    bool shutting_down;
     pthread_mutex_t lock;
     pthread_cond_t cond;
 } encoded_frame_queue_ctx_t;
@@ -19,6 +20,7 @@ int encoded_frame_queue_init(void)
     g_queue.head = 0;
     g_queue.tail = 0;
     g_queue.count = 0;
+    g_queue.shutting_down = false;
 
     pthread_mutex_init(&g_queue.lock, nullptr);
     pthread_cond_init(&g_queue.cond, nullptr);
@@ -54,9 +56,15 @@ encoded_frame_t *encoded_frame_queue_pop(void)
 {
     pthread_mutex_lock(&g_queue.lock);
 
-    while (g_queue.count == 0)
+    while (g_queue.count == 0 && !g_queue.shutting_down)
     {
         pthread_cond_wait(&g_queue.cond, &g_queue.lock);
+    }
+
+    if (g_queue.count == 0 && g_queue.shutting_down)
+    {
+        pthread_mutex_unlock(&g_queue.lock);
+        return nullptr;
     }
 
     encoded_frame_t *frame = g_queue.frames[g_queue.head];
@@ -65,6 +73,14 @@ encoded_frame_t *encoded_frame_queue_pop(void)
 
     pthread_mutex_unlock(&g_queue.lock);
     return frame;
+}
+
+void encoded_frame_queue_shutdown(void)
+{
+    pthread_mutex_lock(&g_queue.lock);
+    g_queue.shutting_down = true;
+    pthread_cond_broadcast(&g_queue.cond);
+    pthread_mutex_unlock(&g_queue.lock);
 }
 
 int encoded_frame_queue_count(void)
