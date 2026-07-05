@@ -29,6 +29,7 @@ int encoded_frame_pool_init(void)
         g_pool.frames[i].data = g_pool.buffers[i];
         g_pool.frames[i].size = 0;
         g_pool.frames[i].pts_us = 0;
+        g_pool.frames[i].sequence = 0;
         g_pool.frames[i].ref_count = 0;
         g_pool.used[i] = 0;
     }
@@ -56,6 +57,9 @@ encoded_frame_t *encoded_frame_pool_acquire(void)
         if (!g_pool.used[i])
         {
             g_pool.used[i] = 1;
+            g_pool.frames[i].size = 0;
+            g_pool.frames[i].pts_us = 0;
+            g_pool.frames[i].sequence = 0;
             g_pool.frames[i].ref_count = 1;
             pthread_mutex_unlock(&g_pool.lock);
             return &g_pool.frames[i];

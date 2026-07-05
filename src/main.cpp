@@ -10,6 +10,8 @@
 #include "encoder_thread.h"
 #include "bcm2835_encoder.h"
 #include "h264_writer.h"
+#include "rtp_packetizer.h"
+#include "rtp_packetizer_thread.h"
 
 static std::atomic<bool> g_consumer_running(true);
 
@@ -54,10 +56,10 @@ int main()
         return -1;
     }
 
-    if (h264_writer_start() < 0)
-    {
-        return -1;
-    }
+    // if (h264_writer_start() < 0)
+    // {
+    //     return -1;
+    // }
 
     if (camera_capture_init() < 0)
     {
@@ -80,11 +82,15 @@ int main()
 
     camera_capture_start();
 
+    pthread_t rtp_tid;
+    pthread_create(&rtp_tid, nullptr, rtp_packetizer_thread_func, nullptr);
+
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
 
-    h264_writer_stop();
+    pthread_join(rtp_tid, nullptr);
+    // h264_writer_stop();
     camera_capture_stop();
 
     // camera_capture_cleanup();

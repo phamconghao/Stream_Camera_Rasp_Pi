@@ -37,6 +37,7 @@ include_directories(
     include/frame
     include/writer
     include/parser
+    include/rtp
 
     ${LIBCAMERA_INCLUDE_DIRS}
 )
@@ -63,6 +64,9 @@ set(SOURCES
     src/writer/h264_writer.cpp
 
     src/parser/h264_nal_parser.cpp
+
+    src/rtp/rtp_packetizer.cpp
+    src/rtp/rtp_packetizer_thread.cpp
 )
 
 #

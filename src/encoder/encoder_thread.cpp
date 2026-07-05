@@ -39,8 +39,8 @@ static void *encoder_thread_func(void *arg)
 
         // memcpy(encoded->data, raw->data, raw->size);
         // encoded->size = raw->size;
-        // encoded->pts_us = raw->pts_us;
-        // encoded->sequence = raw->sequence;
+        encoded->pts_us = raw->pts_us;
+        encoded->sequence = raw->sequence;
 
         // std::cout << "[ENCODER] seq = " << encoded->sequence << " size = " << encoded->size << std::endl;
 
