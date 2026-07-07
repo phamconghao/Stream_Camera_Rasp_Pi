@@ -7,9 +7,9 @@
 #include "encoded_frame_queue.h"
 #include "rtp_packetizer_thread.h"
 #include "h264_nal_parser.h"
+#include "app_state.h"
 
 static pthread_t g_rtp_thread;
-static std::atomic<bool> g_running(false);
 
 static void *rtp_packetizer_thread_func(void *arg)
 {

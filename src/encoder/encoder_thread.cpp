@@ -11,9 +11,9 @@
 #include "encoded_frame_queue.h"
 #include "encoder_thread.h"
 #include "bcm2835_encoder.h"
+#include "app_state.h"
 
 static pthread_t g_encoder_thread;
-static std::atomic<bool> g_running(false);
 
 static void *encoder_thread_func(void *arg)
 {

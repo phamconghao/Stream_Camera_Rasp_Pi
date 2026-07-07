@@ -38,6 +38,7 @@ include_directories(
     include/writer
     include/parser
     include/rtp
+    include/common
 
     ${LIBCAMERA_INCLUDE_DIRS}
 )
@@ -67,6 +68,9 @@ set(SOURCES
 
     src/rtp/rtp_packetizer.cpp
     src/rtp/rtp_packetizer_thread.cpp
+
+    src/common/app_state.cpp
+    src/common/log.cpp
 )
 
 #
