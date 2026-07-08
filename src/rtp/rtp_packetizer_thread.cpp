@@ -1,5 +1,5 @@
-#include <iostream>
 #include <pthread.h>
+#include <cstdio>
 #include <atomic>
 
 #include "encoded_frame.h"
@@ -8,6 +8,9 @@
 #include "rtp_packetizer_thread.h"
 #include "h264_nal_parser.h"
 #include "app_state.h"
+#include "log.h"
+
+static const char *TAG = "RTP";
 
 static pthread_t g_rtp_thread;
 
@@ -15,7 +18,7 @@ static void *rtp_packetizer_thread_func(void *arg)
 {
     (void)arg;
 
-    std::cout << "[RTP] thread started" << std::endl;
+    LOG_INFO(TAG, "thread started");
 
     while (g_running)
     {
@@ -25,24 +28,30 @@ static void *rtp_packetizer_thread_func(void *arg)
             continue;
         }
 
-        std::cout << "[RTP] frame seq = " << encoded->sequence << " size = " << encoded->size << std::endl;
+        LOG_INFO(TAG, "frame seq = %u size = %zu", encoded->sequence, encoded->size);
 
-        /**
-         * TODO:
-         * 
-         * Parser init
-         * 
-         * Parse each NAL
-         * 
-         * In:
-         *      type
-         *      size
-         */
+        h264_nal_parser_t parser;
+        h264_nal_parser_init(&parser, encoded->data, encoded->size);
+
+        h264_nal_t nal;
+        while (h264_nal_parser_next(&parser, &nal))
+        {
+            LOG_INFO(TAG, "  NAL type = %s size = %zu",
+                     h264_nal_type_string(nal.nal_type), nal.size);
+
+            /**
+             * TODO (Phase 8):
+             *   - if nal.size fits in one RTP payload (< MTU), send as
+             *     a Single NAL Unit packet
+             *   - otherwise, split into FU-A fragments
+             *   - SPS/PPS pairs can be combined into a STAP-A packet
+             */
+        }
 
         encoded_frame_pool_release(encoded);
     }
 
-    std::cout << "[RTP] thread exit" << std::endl;
+    LOG_INFO(TAG, "thread exit");
 
     return nullptr;
 }

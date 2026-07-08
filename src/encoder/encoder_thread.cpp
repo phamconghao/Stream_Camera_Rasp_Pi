@@ -1,6 +1,5 @@
-#include <iostream>
 #include <pthread.h>
-#include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include "raw_frame.h"
@@ -12,6 +11,9 @@
 #include "encoder_thread.h"
 #include "bcm2835_encoder.h"
 #include "app_state.h"
+#include "log.h"
+
+static const char *TAG = "ENCODER";
 
 static pthread_t g_encoder_thread;
 
@@ -19,7 +21,7 @@ static void *encoder_thread_func(void *arg)
 {
     (void)arg;
 
-    std::cout << "[ENCODER] thread started" << std::endl;
+    LOG_INFO(TAG, "thread started");
 
     while (g_running)
     {
@@ -32,37 +34,34 @@ static void *encoder_thread_func(void *arg)
         encoded_frame_t *encoded = encoded_frame_pool_acquire();
         if (!encoded)
         {
-            std::cout << "[ENCODER] encoded pool empty" << std::endl;
+            LOG_WARN(TAG, "encoded pool empty");
             raw_frame_pool_release(raw);
             continue;
         }
 
-        // memcpy(encoded->data, raw->data, raw->size);
-        // encoded->size = raw->size;
         encoded->pts_us = raw->pts_us;
         encoded->sequence = raw->sequence;
 
-        // std::cout << "[ENCODER] seq = " << encoded->sequence << " size = " << encoded->size << std::endl;
-
         if (bcm2835_encoder_encode_frame(raw, encoded) == 0)
         {
+            LOG_INFO(TAG, "frame encoded size = %zu", encoded->size);
+
             if (encoded_frame_queue_push(encoded) < 0)
             {
-                std::cout << "[ENC] queue full" << std::endl;
+                LOG_WARN(TAG, "encoded queue full");
                 encoded_frame_pool_release(encoded);
             }
         }
         else
         {
+            LOG_WARN(TAG, "encode failed seq = %u", encoded->sequence);
             encoded_frame_pool_release(encoded);
         }
 
-        std::cout << "[ENC] frame encoded size = " << encoded->size << std::endl;
-        
         raw_frame_pool_release(raw);
     }
 
-    std::cout << "[ENCODER] thread exit" << std::endl;
+    LOG_INFO(TAG, "thread exit");
 
     return nullptr;
 }
