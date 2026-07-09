@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <atomic>
 
+#include "app_state.h"
 #include "camera_capture.h"
 #include "raw_frame_pool.h"
 #include "raw_frame_queue.h"
@@ -36,6 +37,12 @@ void *consumer_thread(void *)
 
 int main()
 {
+    // App-level flag: only main() (or a future signal handler installed
+    // by main()) writes to this. Each thread module manages its own
+    // independent running flag for start/stop, so they can be controlled
+    // separately later (per RTSP-client sessions, etc.).
+    g_running = true;
+
     if (raw_frame_pool_init() < 0)
     {
         return -1;
@@ -91,12 +98,16 @@ int main()
 
     std::cin.get();
 
-    // Stop in producer -> consumer order so each stage can drain and
-    // exit cleanly instead of deadlocking on a queue that will never
-    // receive another item:
+    // App-wide shutdown signal first (for any future code that only
+    // polls g_running, e.g. a SIGINT-driven main loop). Each thread is
+    // then stopped explicitly and independently, in producer -> consumer
+    // order so each stage can drain and exit cleanly instead of
+    // deadlocking on a queue that will never receive another item:
     //   1. Stop the camera (no more raw frames produced)
     //   2. Stop the encoder thread (drains raw queue, then exits)
     //   3. Stop the RTP thread (drains encoded queue, then exits)
+    g_running = false;
+
     camera_capture_stop();
     // camera_capture_cleanup();
 

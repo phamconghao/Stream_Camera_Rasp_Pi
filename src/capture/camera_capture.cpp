@@ -18,7 +18,7 @@ static std::unique_ptr<CameraConfiguration> g_config;
 static std::unique_ptr<FrameBufferAllocator> g_allocator;
 static Stream *g_stream;
 static std::vector<std::unique_ptr<Request>> g_requests;
-static bool g_running = false;
+static bool g_capture_running = false;
 static uint64_t g_frame_count = 0;
 static bool g_dumped = false;
 
@@ -40,7 +40,7 @@ static void dump_frame(const void *data, size_t size)
 
 static void request_complete(Request *request)
 {
-    if (!g_running)
+    if (!g_capture_running)
     {
         return;
     }
@@ -123,7 +123,7 @@ static void request_complete(Request *request)
     // Requeue requests
     request->reuse(Request::ReuseBuffers);
 
-    if (g_running)
+    if (g_capture_running)
     {
         g_camera->queueRequest(request);
     }
@@ -235,7 +235,7 @@ int camera_capture_init(void)
 int camera_capture_start(void)
 {
     std::cout << "[CAPTURE] start" << std::endl;
-    g_running = true;
+    g_capture_running = true;
     
     if (g_camera->start() < 0)
     {
@@ -257,7 +257,7 @@ void camera_capture_stop(void)
 {
     std::cout << "[CAPTURE] stop" << std::endl;
     std::cout << "[STOP] begin" << std::endl;
-    g_running = false;
+    g_capture_running = false;
     g_camera->stop();
     std::cout << "[STOP] end" << std::endl;
 }

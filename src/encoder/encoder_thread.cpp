@@ -1,6 +1,7 @@
 #include <pthread.h>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 
 #include "raw_frame.h"
 #include "raw_frame_pool.h"
@@ -10,12 +11,17 @@
 #include "encoded_frame_queue.h"
 #include "encoder_thread.h"
 #include "bcm2835_encoder.h"
-#include "app_state.h"
 #include "log.h"
 
 static const char *TAG = "ENCODER";
 
 static pthread_t g_encoder_thread;
+
+// Owned exclusively by this module. Independent from app_state::g_running
+// and from every other thread's flag, so this thread can be started and
+// stopped on its own (e.g. later, per-session logic won't need to touch
+// any other thread's state).
+static std::atomic<bool> g_encoder_running(false);
 
 static void *encoder_thread_func(void *arg)
 {
@@ -23,7 +29,7 @@ static void *encoder_thread_func(void *arg)
 
     LOG_INFO(TAG, "thread started");
 
-    while (g_running)
+    while (g_encoder_running)
     {
         raw_frame_t *raw = raw_frame_queue_pop();
         if (!raw)
@@ -68,7 +74,7 @@ static void *encoder_thread_func(void *arg)
 
 int encoder_thread_start(void)
 {
-    g_running = true;
+    g_encoder_running = true;
 
     if (pthread_create(&g_encoder_thread, nullptr, encoder_thread_func, nullptr) != 0)
     {
@@ -81,7 +87,7 @@ int encoder_thread_start(void)
 
 void encoder_thread_stop(void)
 {
-    g_running = false;
+    g_encoder_running = false;
 
     // Wake the thread up if it's blocked waiting for a raw frame,
     // otherwise pthread_join below would hang forever once the

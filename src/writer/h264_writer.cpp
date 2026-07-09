@@ -10,7 +10,7 @@
 #include "h264_nal_parser.h"
 
 static pthread_t g_thread;
-static bool g_running = false;
+static bool g_writer_running = false;
 static FILE *g_fp = nullptr;
 
 static void *writer_thread_func(void *arg)
@@ -18,7 +18,7 @@ static void *writer_thread_func(void *arg)
     (void)arg;
     std::cout << "[WRITER] thread started" << std::endl;
 
-    while (g_running)
+    while (g_writer_running)
     {
         encoded_frame_t *frame = encoded_frame_queue_pop();
         if (!frame)
@@ -61,7 +61,7 @@ int h264_writer_start()
         return -1;
     }
 
-    g_running = true;
+    g_writer_running = true;
     pthread_create(&g_thread, nullptr, writer_thread_func, nullptr);
 
     return 0;
@@ -69,7 +69,7 @@ int h264_writer_start()
 
 void h264_writer_stop()
 {
-    g_running = false;
+    g_writer_running = false;
     pthread_join(g_thread, nullptr);
 
     if (g_fp)

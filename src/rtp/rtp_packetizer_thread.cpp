@@ -7,12 +7,16 @@
 #include "encoded_frame_queue.h"
 #include "rtp_packetizer_thread.h"
 #include "h264_nal_parser.h"
-#include "app_state.h"
 #include "log.h"
 
 static const char *TAG = "RTP";
 
 static pthread_t g_rtp_thread;
+
+// Owned exclusively by this module — independent from app_state::g_running
+// and from encoder_thread's flag, so the RTP sender can later be
+// started/stopped per RTSP session without touching the encoder.
+static std::atomic<bool> g_rtp_running(false);
 
 static void *rtp_packetizer_thread_func(void *arg)
 {
@@ -20,7 +24,7 @@ static void *rtp_packetizer_thread_func(void *arg)
 
     LOG_INFO(TAG, "thread started");
 
-    while (g_running)
+    while (g_rtp_running)
     {
         encoded_frame_t *encoded = encoded_frame_queue_pop();
         if (!encoded)
@@ -58,7 +62,7 @@ static void *rtp_packetizer_thread_func(void *arg)
 
 int rtp_packetizer_thread_start(void)
 {
-    g_running = true;
+    g_rtp_running = true;
 
     if (pthread_create(&g_rtp_thread, nullptr, rtp_packetizer_thread_func, nullptr) != 0)
     {
@@ -71,7 +75,7 @@ int rtp_packetizer_thread_start(void)
 
 void rtp_packetizer_thread_stop(void)
 {
-    g_running = false;
+    g_rtp_running = false;
 
     // Wake the thread up if it's blocked waiting for an encoded frame,
     // otherwise pthread_join below would hang forever.
