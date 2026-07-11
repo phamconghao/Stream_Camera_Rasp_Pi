@@ -13,6 +13,8 @@
 #include "h264_writer.h"
 #include "rtp_packetizer.h"
 #include "rtp_packetizer_thread.h"
+#include "rtp_packet_pool.h"
+#include "rtp_packet_queue.h"
 
 static std::atomic<bool> g_consumer_running(true);
 
@@ -59,6 +61,16 @@ int main()
     }
 
     if (encoded_frame_queue_init() < 0)
+    {
+        return -1;
+    }
+
+    if (rtp_packet_pool_init() < 0)
+    {
+        return -1;
+    }
+
+    if (rtp_packet_queue_init() < 0)
     {
         return -1;
     }
@@ -117,6 +129,9 @@ int main()
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
+
+    rtp_packet_queue_cleanup();
+    rtp_packet_pool_cleanup();
 
     raw_frame_queue_cleanup();
     raw_frame_pool_cleanup();

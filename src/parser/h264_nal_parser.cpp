@@ -67,6 +67,7 @@ bool h264_nal_parser_next(h264_nal_parser_t *parser, h264_nal_t *out_nal)
     out_nal->data = &parser->data[nal_start];
     out_nal->size = nal_end - nal_start;
     out_nal->nal_type = out_nal->data[0] & 0x1F;
+    out_nal->is_last_nal = (next < 0);
 
     parser->pos = (next < 0) ? parser->size : (size_t)next;
 

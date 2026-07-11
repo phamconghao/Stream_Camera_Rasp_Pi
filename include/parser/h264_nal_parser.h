@@ -10,6 +10,7 @@ typedef struct
     uint8_t *data;
     size_t size;
     uint8_t nal_type;
+    bool is_last_nal;
 } h264_nal_t;
 
 /**

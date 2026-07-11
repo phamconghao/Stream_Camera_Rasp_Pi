@@ -72,6 +72,7 @@ int rtp_packetize_single_nal(const h264_nal_t *nal, rtp_packet_t *packet)
     build_rtp_header(packet);
 
     copy_single_nal_payload(packet, nal);
+    packet->nal_type = nal->nal_type;
 
     return 0;
 }
