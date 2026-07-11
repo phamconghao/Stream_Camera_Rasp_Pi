@@ -69,7 +69,8 @@ static void request_complete(Request *request)
             continue;
         }
         const FrameMetadata &meta = buffer->metadata();
-        std::cout << "[CAPTURE] byteused = " << meta.planes()[0].bytesused << std::endl;
+        const auto meta_planes = meta.planes();
+        std::cout << "[CAPTURE] byteused = " << meta_planes[0].bytesused << std::endl;
         
         frame->pts_us = meta.timestamp / 1000;
         frame->sequence = meta.sequence;
@@ -79,7 +80,7 @@ static void request_complete(Request *request)
         for (size_t i = 0; i < buffer->planes().size(); i++)
         {
             const FrameBuffer::Plane &plane = buffer->planes()[i];
-            const FrameMetadata::Plane &meta_plane = meta.planes()[i];
+            const FrameMetadata::Plane &meta_plane = meta_planes[i];
             void *memory = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED, plane.fd.get(), 0);
             std::cout << "Plane " << i << " length = " << buffer->planes()[i].length << std::endl;
             

@@ -68,6 +68,8 @@ set(SOURCES
 
     src/rtp/rtp_packetizer.cpp
     src/rtp/rtp_packetizer_thread.cpp
+    src/rtp/rtp_packet_pool.cpp
+    src/rtp/rtp_packet_queue.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp
