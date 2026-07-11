@@ -9,12 +9,12 @@ static int find_start_code(uint8_t *data, size_t size, size_t offset)
         {
             if (data[i + 2] == 0x01)
             {
-                return i;
+                return static_cast<int>(i);
             }
 
             if (i + 3 < size && data[i + 2] == 0x00 && data[i + 3] == 0x01)
             {
-                return i;
+                return static_cast<int>(i);
             }
         }
     }

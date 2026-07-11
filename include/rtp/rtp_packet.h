@@ -10,13 +10,14 @@
 
 typedef struct
 {
-    bool marker;
-    uint8_t data[RTP_MAX_PACKET_SIZE];
-    uint8_t payload_type;
-    uint16_t sequence_number;
     uint32_t timestamp;
     uint32_t ssrc;
     size_t size;
+    uint16_t sequence_number;
+    uint8_t data[RTP_MAX_PACKET_SIZE];
+    uint8_t payload_type;
+    uint8_t nal_type;
+    bool marker;
 } rtp_packet_t;
 
 #endif // __RTP_PACKET_H__

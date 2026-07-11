@@ -71,3 +71,5 @@ log/
 myenv/
 .cache/
 
+*.yuv
+*.h264

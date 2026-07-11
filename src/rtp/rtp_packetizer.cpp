@@ -3,74 +3,75 @@
 
 #include "rtp_packetizer.h"
 
-int rtp_build_header(uint8_t *buffer, uint16_t sequence, uint32_t timestamp, uint32_t ssrc, bool marker, uint8_t payload_type)
+/* Build RTP header helper */
+static void build_rtp_header(rtp_packet_t *packet)
 {
-    if (buffer == nullptr)
-    {
-        return -1;
-    }
+    uint8_t *buffer = packet->data;
 
     memset(buffer, 0, RTP_HEADER_SIZE);
 
-    /**
-     * Byte 0
-     * 
-     * Version = 2
-     * Padding = 0
-     * Extension = 0
-     * CSRC Count = 0
-     */
     buffer[0] = 0x80;
 
-    /**
-     * Byte 1
-     * 
-     * Marker
-     * Payload Type
-     */
-    buffer[1] = (marker ? 0x80: 0x00) | (payload_type & 0x7F);
+    buffer[1] = (packet->marker ? 0x80 : 0x00) | (packet->payload_type & 0x7F);
 
-    uint16_t seq = htons(sequence);
+    uint16_t seq = htons(packet->sequence_number);
+
     memcpy(buffer + 2, &seq, sizeof(seq));
 
-    uint32_t ts = htonl(timestamp);
+    uint32_t ts = htonl(packet->timestamp);
+
     memcpy(buffer + 4, &ts, sizeof(ts));
 
-    uint32_t s = htonl(ssrc);
-    memcpy(buffer + 8, &s, sizeof(s));
+    uint32_t ssrc = htonl(packet->ssrc);
 
-    return RTP_HEADER_SIZE;
+    memcpy(buffer + 8, &ssrc, sizeof(ssrc));
 }
 
-int rtp_packetize_single_nal(const h264_nal_t *nal, uint16_t sequence, uint32_t timestamp, uint32_t ssrc, rtp_packet_t *packet)
+/* Annex B start code helper */
+static size_t annexb_start_code_size(const h264_nal_t *nal)
+{
+    if (nal->size >= 4 &&
+        nal->data[0] == 0 &&
+        nal->data[1] == 0 &&
+        nal->data[2] == 0 &&
+        nal->data[3] == 1)
+    {
+        return 4;
+    }
+
+    if (nal->size >= 3 &&
+        nal->data[0] == 0 &&
+        nal->data[1] == 0 &&
+        nal->data[2] == 1)
+    {
+        return 3;
+    }
+
+    return 0;
+}
+
+/* Copy single NAL payload helper */
+static void copy_single_nal_payload(rtp_packet_t *packet, const h264_nal_t *nal)
+{
+    size_t start_code = annexb_start_code_size(nal);
+    size_t payload_size = nal->size - start_code;
+    memcpy(packet->data + RTP_HEADER_SIZE, nal->data + start_code, payload_size);
+    packet->size = RTP_HEADER_SIZE + payload_size;
+}
+
+int rtp_packetize_single_nal(const h264_nal_t *nal, rtp_packet_t *packet)
 {
     if (!nal || !packet)
-    {
         return -1;
-    }
 
-    /**
-     * Single NAL only use when payload less than MTU
-     */
-    if (nal->size > RTP_MAX_PAYLOAD_SIZE)
-    {
+    size_t payload_size = nal->size - annexb_start_code_size(nal);
+
+    if (payload_size > RTP_MAX_PAYLOAD_SIZE)
         return -1;
-    }
 
-    int ret = rtp_build_header(packet->data, sequence, timestamp, ssrc, true, 96);
+    build_rtp_header(packet);
 
-    if (ret < 0)
-    {
-        return -1;
-    }
-
-    memcpy(packet->data + RTP_HEADER_SIZE, nal->data, nal->size);
-    packet->size = RTP_HEADER_SIZE + nal->size;
-    packet->sequence_number = sequence;
-    packet->timestamp = timestamp;
-    packet->ssrc = ssrc;
-    packet->payload_type = 96;
-    packet->marker = true;
+    copy_single_nal_payload(packet, nal);
 
     return 0;
 }
