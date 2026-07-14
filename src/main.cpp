@@ -1,6 +1,8 @@
 #include <iostream>
 #include <pthread.h>
 #include <atomic>
+#include <cstdlib>
+#include <cstdint>
 
 #include "app_state.h"
 #include "camera_capture.h"
@@ -15,6 +17,7 @@
 #include "rtp_packetizer_thread.h"
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
+#include "udp_sender_thread.h"
 
 static std::atomic<bool> g_consumer_running(true);
 
@@ -37,8 +40,14 @@ void *consumer_thread(void *)
     return nullptr;
 }
 
-int main()
+int main(int argc, char **argv)
 {
+    // Destination for the UDP sender. Hardcoded/CLI-provided for now;
+    // once the RTSP server exists, it will negotiate the real client
+    // address per session (SETUP request) instead of a fixed target.
+    const char *dest_ip = (argc > 1) ? argv[1] : "127.0.0.1";
+    uint16_t dest_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 5004;
+
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
     // independent running flag for start/stop, so they can be controlled
@@ -106,6 +115,11 @@ int main()
         return -1;
     }
 
+    if (udp_sender_thread_start(dest_ip, dest_port) < 0)
+    {
+        return -1;
+    }
+
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -117,7 +131,8 @@ int main()
     // deadlocking on a queue that will never receive another item:
     //   1. Stop the camera (no more raw frames produced)
     //   2. Stop the encoder thread (drains raw queue, then exits)
-    //   3. Stop the RTP thread (drains encoded queue, then exits)
+    //   3. Stop the RTP packetizer thread (drains encoded queue, then exits)
+    //   4. Stop the UDP sender thread (drains RTP packet queue, then exits)
     g_running = false;
 
     camera_capture_stop();
@@ -126,6 +141,8 @@ int main()
     encoder_thread_stop();
 
     rtp_packetizer_thread_stop();
+
+    udp_sender_thread_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
