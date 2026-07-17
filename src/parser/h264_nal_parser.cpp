@@ -1,5 +1,9 @@
 #include "h264_nal_parser.h"
 
+// Scans for the next Annex-B start code (00 00 01, the 3-byte form, or
+// 00 00 00 01, the 4-byte form) at or after `offset`. Returns the byte
+// index where the 00 00 (01|00 01) sequence begins, or -1 if none found
+// before the end of the buffer.
 // Find Start Code Helper
 static int find_start_code(uint8_t *data, size_t size, size_t offset)
 {
@@ -22,6 +26,11 @@ static int find_start_code(uint8_t *data, size_t size, size_t offset)
     return -1;
 }
 
+// Human-readable label for a NAL type, used only in log lines. Common
+// H.264 NAL types: 1 = non-IDR slice (P/B frame), 5 = IDR slice
+// (keyframe), 7 = SPS (Sequence Parameter Set), 8 = PPS (Picture
+// Parameter Set). SPS/PPS carry decoder config and are normally sent
+// once at the start of the stream and again before each IDR.
 const char *h264_nal_type_string(uint8_t type)
 {
     switch (type)
@@ -43,6 +52,7 @@ const char *h264_nal_type_string(uint8_t type)
     }
 }
 
+// Reset the iterator to scan `data`/`size` from the beginning.
 void h264_nal_parser_init(h264_nal_parser_t *parser, uint8_t *data, size_t size)
 {
     parser->data = data;
@@ -50,6 +60,16 @@ void h264_nal_parser_init(h264_nal_parser_t *parser, uint8_t *data, size_t size)
     parser->pos = 0;
 }
 
+// Advance to the next NAL unit. Returns false once there are no more
+// NALs left in the buffer (out_nal is left untouched in that case).
+//
+// Each call: finds the current NAL's start code, determines whether it's
+// the 3-byte or 4-byte form (by checking if byte[start+2] is already the
+// 0x01 terminator), computes where the NAL's actual payload begins
+// (nal_start = start + prefix_size), then searches for the START of the
+// *next* NAL (which also marks the END of this one) to compute this
+// NAL's size. If no further start code is found, this NAL runs to the
+// end of the buffer and is_last_nal is set true.
 bool h264_nal_parser_next(h264_nal_parser_t *parser, h264_nal_t *out_nal)
 {
     int start = find_start_code(parser->data, parser->size, parser->pos);
@@ -74,6 +94,9 @@ bool h264_nal_parser_next(h264_nal_parser_t *parser, h264_nal_t *out_nal)
     return true;
 }
 
+// Legacy convenience wrapper: collects every NAL from the iterator API
+// above into a std::vector. Kept only for h264_writer.cpp; new code
+// should use h264_nal_parser_init()/_next() directly (see rtp_packetizer_thread.cpp).
 int h264_split_nals(uint8_t *data, size_t size, std::vector<h264_nal_t> &nals)
 {
     nals.clear();

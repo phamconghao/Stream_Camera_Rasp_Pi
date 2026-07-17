@@ -4,6 +4,18 @@
 
 #include "encoded_frame_pool.h"
 
+/**
+ * Same fixed-size pool pattern as raw_frame_pool.cpp - see that file
+ * for the detailed rationale (avoids per-frame malloc/free, hands out
+ * pointers by reference-counted ownership). This pool provides slots
+ * for encoded_frame_t (post-encoder H.264 access units) instead of raw
+ * YUV420 frames.
+ *
+ * One difference from raw_frame_pool_acquire(): here, acquire() also
+ * resets size/pts_us/sequence to 0 before handing the slot out, so a
+ * stale value from this slot's previous use can never leak through if
+ * a caller forgets to set one of those fields.
+ */
 typedef struct
 {
     encoded_frame_t frames[ENCODED_FRAME_POOL_SIZE];

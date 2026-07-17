@@ -2,15 +2,28 @@
 
 #include "raw_frame_queue.h"
 
+/**
+ * Thread-safe ring buffer carrying raw_frame_t POINTERS (zero-copy) from
+ * the capture thread (producer) to the encoder thread (consumer).
+ *
+ * This is a classic bounded producer/consumer queue: mutex + condvar,
+ * push() signals one waiter, pop() blocks until something is available.
+ *
+ * Shutdown note: pop() blocks indefinitely on an empty queue via
+ * pthread_cond_wait. Without `shutting_down`, a consumer thread stuck
+ * waiting here would never wake up once its producer stops - so any
+ * thread's stop() function MUST call raw_frame_queue_shutdown() before
+ * pthread_join(), or that join will hang forever. See encoder_thread.cpp.
+ */
 typedef struct
 {
     raw_frame_t *frames[RAW_FRAME_QUEUE_SIZE];
-    int head;
-    int tail;
-    int count;
-    bool shutting_down;
+    int head;               // index to pop from next
+    int tail;                // index to push into next
+    int count;               // number of items currently queued
+    bool shutting_down;      // set by raw_frame_queue_shutdown(); wakes any blocked pop()
     pthread_mutex_t lock;
-    pthread_cond_t cond;
+    pthread_cond_t cond;     // signaled on push, broadcast on shutdown
 } raw_frame_queue_ctx_t;
 
 static raw_frame_queue_ctx_t g_queue;
@@ -33,6 +46,9 @@ void raw_frame_queue_cleanup(void)
     pthread_cond_destroy(&g_queue.cond);
 }
 
+// Called by camera_capture's libcamera callback for every captured frame.
+// Non-blocking: if the encoder can't keep up and the queue is full, the
+// frame is dropped (returns -1) rather than stalling the camera callback.
 int raw_frame_queue_push(raw_frame_t *frame)
 {
     pthread_mutex_lock(&g_queue.lock);
@@ -52,6 +68,9 @@ int raw_frame_queue_push(raw_frame_t *frame)
     return 0;
 }
 
+// Called by encoder_thread's loop. Blocks until a frame is available OR
+// raw_frame_queue_shutdown() has been called and the queue has drained
+// (in which case it returns nullptr so the caller's while-loop can exit).
 raw_frame_t *raw_frame_queue_pop(void)
 {
     pthread_mutex_lock(&g_queue.lock);
@@ -75,6 +94,10 @@ raw_frame_t *raw_frame_queue_pop(void)
     return frame;
 }
 
+// Wakes up any thread currently blocked in pop() so it can observe
+// shutdown and return nullptr instead of waiting forever. Call this from
+// encoder_thread_stop() (or any future consumer's stop function) before
+// pthread_join().
 void raw_frame_queue_shutdown(void)
 {
     pthread_mutex_lock(&g_queue.lock);
@@ -83,6 +106,7 @@ void raw_frame_queue_shutdown(void)
     pthread_mutex_unlock(&g_queue.lock);
 }
 
+// Diagnostic/monitoring helper - current number of queued frames.
 int raw_frame_queue_count(void)
 {
     pthread_mutex_lock(&g_queue.lock);

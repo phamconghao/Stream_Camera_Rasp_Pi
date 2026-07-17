@@ -2,13 +2,18 @@
 
 #include "encoded_frame_queue.h"
 
+/**
+ * Same bounded producer/consumer ring buffer pattern as raw_frame_queue.cpp
+ * (see that file for the detailed shutdown-mechanism rationale). Producer
+ * is encoder_thread, consumer is rtp_packetizer_thread.
+ */
 typedef struct
 {
     encoded_frame_t *frames[ENCODED_FRAME_QUEUE_SIZE];
     int head;
     int tail;
     int count;
-    bool shutting_down;
+    bool shutting_down;      // set by encoded_frame_queue_shutdown(); wakes any blocked pop()
     pthread_mutex_t lock;
     pthread_cond_t cond;
 } encoded_frame_queue_ctx_t;
@@ -52,6 +57,9 @@ int encoded_frame_queue_push(encoded_frame_t *frame)
     return 0;
 }
 
+// Called by rtp_packetizer_thread. Blocks until encoder_thread pushes a
+// frame, or returns nullptr once encoded_frame_queue_shutdown() has been
+// called and the queue has drained.
 encoded_frame_t *encoded_frame_queue_pop(void)
 {
     pthread_mutex_lock(&g_queue.lock);

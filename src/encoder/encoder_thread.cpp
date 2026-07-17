@@ -13,6 +13,23 @@
 #include "bcm2835_encoder.h"
 #include "log.h"
 
+/**
+ * ============================================================================
+ * PIPELINE STAGE 2 (thread wrapper): Raw Frame Queue -> [THIS] -> Encoded Frame Queue
+ * ============================================================================
+ *
+ * The one dedicated thread of the pipeline's encoding stage. Its job is
+ * purely orchestration/pool management - the actual H.264 encoding work
+ * happens inside bcm2835_encoder_encode_frame() (hardware-accelerated,
+ * blocking call). Loop, once per raw frame:
+ *   1. Pop a raw_frame_t from raw_frame_queue (blocks if empty).
+ *   2. Acquire a free encoded_frame_t from encoded_frame_pool.
+ *   3. Call the hardware encoder to fill it in.
+ *   4. Push the encoded_frame_t into encoded_frame_queue for
+ *      rtp_packetizer_thread to consume.
+ *   5. Release the raw_frame_t back to raw_frame_pool either way.
+ */
+
 static const char *TAG = "ENCODER";
 
 static pthread_t g_encoder_thread;
@@ -31,6 +48,9 @@ static void *encoder_thread_func(void *arg)
 
     while (g_encoder_running)
     {
+        // Blocks until camera_capture pushes a frame, or until
+        // raw_frame_queue_shutdown() is called (returns nullptr then,
+        // so the while-loop re-checks g_encoder_running and exits).
         raw_frame_t *raw = raw_frame_queue_pop();
         if (!raw)
         {
@@ -40,11 +60,15 @@ static void *encoder_thread_func(void *arg)
         encoded_frame_t *encoded = encoded_frame_pool_acquire();
         if (!encoded)
         {
+            // Downstream (RTP packetizer) too slow / pool exhausted -
+            // drop this frame's encode rather than block.
             LOG_WARN(TAG, "encoded pool empty");
             raw_frame_pool_release(raw);
             continue;
         }
 
+        // Carry PTS/sequence across from raw -> encoded so downstream
+        // RTP timestamps stay tied to the original capture time.
         encoded->pts_us = raw->pts_us;
         encoded->sequence = raw->sequence;
 
@@ -72,6 +96,8 @@ static void *encoder_thread_func(void *arg)
     return nullptr;
 }
 
+// Spawns the encoder thread. Safe to call independently of any other
+// thread's start/stop (see the file-level comment on g_encoder_running).
 int encoder_thread_start(void)
 {
     g_encoder_running = true;

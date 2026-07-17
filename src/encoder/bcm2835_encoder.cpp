@@ -9,19 +9,60 @@
 
 #include "bcm2835_encoder.h"
 
-#define OUTPUT_BUFFER_COUNT 4
-#define CAPTURE_BUFFER_COUNT 4
+/**
+ * ============================================================================
+ * PIPELINE STAGE 2: Raw Frame Queue -> [encoder_thread -> THIS FILE] -> Encoded Frame Queue
+ * ============================================================================
+ *
+ * Drives the Raspberry Pi's hardware H.264 encoder (the BCM2835 video
+ * codec, exposed by the kernel as a V4L2 "Memory-to-Memory" (M2M)
+ * device at /dev/video11) directly via ioctl(), with no external
+ * library (no GStreamer/libav) - just raw V4L2 calls.
+ *
+ * V4L2 M2M concept for anyone unfamiliar: a normal V4L2 device has one
+ * queue (e.g. a webcam's CAPTURE queue). An M2M *codec* device instead
+ * exposes TWO queues on the same file descriptor:
+ *   - OUTPUT queue:  where WE feed data IN (here: raw YUV420 frames).
+ *     ("output" is named from the *driver's* point of view - output
+ *     from userspace into the driver - not the final result.)
+ *   - CAPTURE queue: where the driver puts the RESULT for us to read
+ *     (here: encoded H.264 access units).
+ * Both queues use the same QUERYBUF/QBUF/DQBUF/STREAMON ioctl dance as
+ * a regular V4L2 capture device, just applied to two independent queues.
+ *
+ * Buffer flow per frame (see bcm2835_encoder_encode_frame at the bottom):
+ *   1. Copy raw YUV420 bytes into an mmap'd OUTPUT buffer, QBUF it
+ *      (hand it to the driver to encode).
+ *   2. DQBUF the CAPTURE queue (blocks until the driver has produced
+ *      one encoded access unit) - copy its bytes into `encoded->data`.
+ *   3. DQBUF the OUTPUT queue (reclaim the buffer we queued in step 1).
+ *   4. Re-QBUF the CAPTURE buffer so the driver can reuse that slot.
+ *
+ * Known limitation (not yet fixed): this always uses OUTPUT buffer
+ * index 0 for every frame instead of rotating through
+ * OUTPUT_BUFFER_COUNT buffers. This works because the encode call is
+ * fully synchronous (QBUF then immediately DQBUF before returning), so
+ * there's never more than one OUTPUT buffer in flight at a time - but
+ * it means this encoder cannot be pipelined/parallelized across frames
+ * without also fixing this to rotate buffer indices.
+ */
+
+#define OUTPUT_BUFFER_COUNT 4  // YUV420 input buffers (see limitation above: only index 0 is currently used)
+#define CAPTURE_BUFFER_COUNT 4 // H.264 output buffers, rotated normally via capture_index
 
 struct encoder_buffer_t
 {
-    void *start;
-    size_t length;
+    void *start;   // mmap'd userspace pointer for this V4L2 buffer
+    size_t length; // mmap'd region size, as reported by QUERYBUF
 };
 
-static int g_fd = -1;
+static int g_fd = -1; // /dev/video11 file descriptor
 static encoder_buffer_t g_output_buffers[OUTPUT_BUFFER_COUNT];
 static encoder_buffer_t g_capture_buffers[CAPTURE_BUFFER_COUNT];
 
+// QUERYBUF asks the driver where each buffer lives in the device's
+// memory (as an mmap offset); we then mmap() each one into our address
+// space so we can memcpy into/out of them directly.
 // QUERYBUF for OUTPUT queue helper
 static int query_output_buffers()
 {
@@ -253,6 +294,10 @@ static int queue_capture_buffer(uint32_t index)
     return 0;
 }
 
+// One-time setup: opens /dev/video11, sets the pixel format on both
+// queues (YUV420 in on OUTPUT, H.264 out on CAPTURE), requests buffers,
+// mmaps them, and starts streaming on both queues so the encoder is
+// ready to accept frames via bcm2835_encoder_encode_frame().
 int bcm2835_encoder_init(int width, int height)
 {
     g_fd = open("/dev/video11", O_RDWR);
@@ -377,6 +422,12 @@ void bcm2835_encoder_cleanup(void)
     }
 }
 
+// Debug/offline utility: encodes a single raw YUV420 file straight from
+// disk to an H.264 file on disk, bypassing the whole raw_frame/queue
+// pipeline. Useful for testing the encoder in isolation (e.g. with a
+// dumped frame_000.yuv from camera_capture.cpp) without needing the
+// camera or the rest of the threads running. Not used by the live
+// pipeline (main.cpp calls bcm2835_encoder_encode_frame() instead).
 int bcm2835_encoder_encode_file(const char *input_file, const char *output_file)
 {
     FILE *fp = fopen(input_file, "rb");
@@ -450,11 +501,19 @@ int bcm2835_encoder_encode_file(const char *input_file, const char *output_file)
     return 0;
 }
 
+// Called by encoder_thread once per raw frame. Synchronous/blocking:
+// feeds `raw` into the OUTPUT queue and blocks (via DQBUF) until the
+// hardware has produced one encoded H.264 access unit into `encoded`.
+// See the file-level comment above for the full QBUF/DQBUF buffer dance.
+// Returns 0 on success, -1 on any V4L2 ioctl failure.
 int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded)
 {
     uint32_t capture_index;
     uint32_t bytes_used;
 
+    // Always uses OUTPUT buffer index 0 (see the "known limitation"
+    // note at the top of this file) - safe today only because this
+    // whole function is synchronous (one QBUF+DQBUF pair per call).
     memcpy(g_output_buffers[0].start, raw->data, raw->size);
 
     struct v4l2_plane planes[1];
@@ -472,22 +531,31 @@ int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded)
     planes[0].bytesused = raw->size;
     planes[0].length = raw->size;
 
+    // Hand the raw YUV420 frame to the driver to encode.
     if (ioctl(g_fd, VIDIOC_QBUF, &buf) < 0)
     {
         perror("QBUF OUTPUT");
         return -1;
     }
 
+    // Blocks until the driver has finished encoding this frame and has
+    // an H.264 access unit ready in one of the CAPTURE buffers.
     if (dequeue_capture_buffer(&capture_index, &bytes_used) < 0)
     {
         return -1;
     }
 
+    // Reclaim the OUTPUT buffer we queued above (the driver is done
+    // reading from it now that the CAPTURE side produced output).
     if (dequeue_output_buffer() < 0)
     {
         return -1;
     }
 
+    // Copy the encoded bytes out of the driver's mmap'd CAPTURE buffer
+    // into our own encoded_frame_t (pool-owned memory), then give that
+    // CAPTURE buffer slot back to the driver so it can be reused for
+    // the next frame.
     memcpy(encoded->data, g_capture_buffers[capture_index].start, bytes_used);
     queue_capture_buffer(capture_index);
     encoded->size = bytes_used;

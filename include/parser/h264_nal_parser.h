@@ -5,12 +5,23 @@
 #include <stddef.h>
 #include <vector>
 
+/**
+ * ============================================================================
+ * PIPELINE STAGE: Encoded Frame -> [THIS] -> RTP Packetizer
+ * ============================================================================
+ *
+ * Splits one Annex-B H.264 access unit (as produced by the hardware
+ * encoder, may contain several NAL units back-to-back - e.g. SPS, PPS,
+ * then a slice) into individual NAL units, each stripped of its Annex-B
+ * start code (00 00 01 or 00 00 00 01) so callers get just the raw NAL
+ * (starting with the 1-byte NAL header, e.g. 0x67 = SPS, 0x65 = IDR slice).
+ */
 typedef struct
 {
-    uint8_t *data;
-    size_t size;
-    uint8_t nal_type;
-    bool is_last_nal;
+    uint8_t *data;      // pointer INTO the original access unit buffer (no copy) - start code already stripped
+    size_t size;        // bytes of this NAL (header + RBSP), not counting the start code
+    uint8_t nal_type;   // low 5 bits of the NAL header byte (see h264_nal_type_string below)
+    bool is_last_nal;   // true for the final NAL in this access unit - rtp_packetizer uses this to set the RTP marker bit
 } h264_nal_t;
 
 /**

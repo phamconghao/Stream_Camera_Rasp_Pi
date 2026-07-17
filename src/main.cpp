@@ -19,6 +19,47 @@
 #include "rtp_packet_queue.h"
 #include "udp_sender_thread.h"
 
+/**
+ * ============================================================================
+ * FULL PIPELINE MAP (see individual files for per-stage detail comments)
+ * ============================================================================
+ *
+ *   Camera (libcamera)
+ *     |
+ *   Capture         <- camera_capture.{h,cpp}            (no dedicated thread; driven by libcamera's own callback)
+ *     |
+ *   Raw Frame Pool/Queue   <- frame/raw_frame*.{h,cpp}
+ *     |
+ *   Encoder Thread  <- encoder/encoder_thread.{h,cpp} + encoder/bcm2835_encoder.{h,cpp}
+ *     |
+ *   Encoded Frame Pool/Queue  <- frame/encoded_frame*.{h,cpp}
+ *     |
+ *   RTP Packetizer Thread  <- rtp/rtp_packetizer_thread.{h,cpp}
+ *     |    (uses parser/h264_nal_parser.{h,cpp} + rtp/rtp_packetizer.{h,cpp})
+ *     |
+ *   RTP Packet Pool/Queue  <- rtp/rtp_packet*.{h,cpp}
+ *     |
+ *   UDP Sender Thread  <- network/udp_sender_thread.{h,cpp} + network/udp_sender.{h,cpp}
+ *     |
+ *   Network -> RTSP/RTP Client
+ *
+ * Every arrow above is "producer pushes pointer, consumer pops pointer" -
+ * frame/packet bytes are never copied between pipeline stages (only
+ * copied once, when captured from the camera / read out of the
+ * hardware encoder). Each thread stage owns its own independent
+ * start/stop running flag (see e.g. g_encoder_running in
+ * encoder_thread.cpp) - app_state::g_running (below) is a separate,
+ * app-wide flag only main() writes to.
+ *
+ * NOT YET IMPLEMENTED (see roadmap): RTSP Server (would replace the
+ * hardcoded dest_ip/dest_port below with per-client negotiation) and
+ * RTCP (receiver feedback / loss reporting).
+ */
+
+// Dead code: an earlier, simpler alternative to rtp_packetizer_thread
+// that just logged encoded frames. Not started anywhere in main() below
+// (the pthread_create call for it is commented out further down) - kept
+// only as a reference of the old, no-longer-used minimal consumer.
 static std::atomic<bool> g_consumer_running(true);
 
 void *consumer_thread(void *)
@@ -54,6 +95,9 @@ int main(int argc, char **argv)
     // separately later (per RTSP-client sessions, etc.).
     g_running = true;
 
+    // Initialize every pool/queue BEFORE starting any thread that could
+    // touch them - each stage's pool/queue must exist before its
+    // producer or consumer thread can safely run.
     if (raw_frame_pool_init() < 0)
     {
         return -1;
@@ -84,6 +128,10 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // h264_writer would write the encoded stream straight to a local
+    // .h264 file - an alternative/earlier consumer of encoded_frame_queue
+    // to the current RTP path. Disabled since the pipeline now streams
+    // over RTP/UDP instead of (or as well as) writing to disk.
     // if (h264_writer_start() < 0)
     // {
     //     return -1;
@@ -103,6 +151,10 @@ int main(int argc, char **argv)
 
     // pthread_create(&consumer_tid, nullptr, consumer_thread, nullptr);
 
+    // Start order: consumer threads first (encoder_thread, then further
+    // downstream rtp_packetizer_thread/udp_sender_thread), THEN start
+    // the camera producing frames - so nothing is ever pushed into a
+    // queue before its consumer thread exists to eventually drain it.
     if (encoder_thread_start() < 0)
     {
         return -1;

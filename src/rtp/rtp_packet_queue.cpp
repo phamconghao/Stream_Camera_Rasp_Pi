@@ -2,6 +2,11 @@
 
 #include "rtp_packet_queue.h"
 
+/**
+ * Same bounded producer/consumer ring buffer pattern as raw_frame_queue.cpp
+ * (see that file for the detailed shutdown-mechanism rationale).
+ * Producer is rtp_packetizer_thread, consumer is udp_sender_thread.
+ */
 #define RTP_PACKET_QUEUE_SIZE 512
 
 typedef struct

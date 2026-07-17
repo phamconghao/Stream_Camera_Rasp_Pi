@@ -8,10 +8,23 @@
 
 #include "log.h"
 
+/**
+ * Plain connectionless UDP: one socket() + one fixed destination
+ * (set once in udp_sender_init) is all that's needed, since UDP has no
+ * handshake/connection state. Each rtp_packet_t is one independent
+ * datagram - no fragmentation/reassembly here (that's why
+ * RTP_MAX_PAYLOAD_SIZE in rtp_packet.h is kept safely under the
+ * Ethernet MTU).
+ *
+ * Destination is currently fixed/hardcoded (passed in from main.cpp's
+ * command-line args) - a real RTSP server would instead learn the
+ * actual client IP/port per-session from the RTSP SETUP request.
+ */
+
 static const char *TAG = "UDP";
 
 static int g_socket_fd = -1;
-static struct sockaddr_in g_dest_addr;
+static struct sockaddr_in g_dest_addr; // destination address, resolved once here and reused for every sendto()
 
 int udp_sender_init(const char *dest_ip, uint16_t dest_port)
 {
@@ -39,6 +52,10 @@ int udp_sender_init(const char *dest_ip, uint16_t dest_port)
     return 0;
 }
 
+// Fire-and-forget: UDP gives no delivery guarantee, so a failed/lost
+// packet here just means one dropped RTP packet on the wire - normal
+// and expected for real-time video (the receiver tolerates some loss;
+// RTCP, not yet implemented, would report loss stats back).
 int udp_sender_send(const uint8_t *data, size_t size)
 {
     if (g_socket_fd < 0)

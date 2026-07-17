@@ -9,6 +9,25 @@
 #include "h264_writer.h"
 #include "h264_nal_parser.h"
 
+/**
+ * See h264_writer.h - not started by main.cpp currently. Writes every
+ * encoded access unit's raw Annex-B bytes to stream.h264 as-is (no
+ * container format, just the elementary stream) - play back with e.g.
+ * `ffplay stream.h264`.
+ *
+ * Uses the legacy std::vector-based h264_split_nals() (just for the
+ * debug NAL-type printout below) rather than the iterator API that
+ * rtp_packetizer_thread uses - fine here since this isn't the hot path.
+ *
+ * Note on shutdown: unlike the queues' blocking pop() used elsewhere,
+ * this thread polls with a 1ms usleep() when the queue is empty instead
+ * of blocking on the condvar - so it does NOT need
+ * encoded_frame_queue_shutdown() to exit cleanly; checking
+ * g_writer_running at the top of the loop is enough. This is simpler
+ * but busier (wakes every 1ms even when idle) than the blocking
+ * approach the other consumer threads use.
+ */
+
 static pthread_t g_thread;
 static bool g_writer_running = false;
 static FILE *g_fp = nullptr;

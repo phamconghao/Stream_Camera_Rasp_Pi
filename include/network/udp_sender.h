@@ -5,6 +5,8 @@
 #include <cstddef>
 
 /**
+ * PIPELINE STAGE: RTP Packet Queue -> [udp_sender_thread + THIS] -> Network -> RTSP/RTP Client
+ *
  * Thin wrapper around a UDP socket for sending pre-built RTP packets.
  * Pure I/O, no threading — used by udp_sender_thread.
  */

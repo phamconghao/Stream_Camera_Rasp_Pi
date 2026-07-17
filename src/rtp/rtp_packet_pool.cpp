@@ -3,6 +3,13 @@
 
 #include "rtp_packet_pool.h"
 
+/**
+ * 512 slots is generous: at 30fps with typically 1-3 RTP packets per
+ * frame (one per NAL, mostly just the slice), that's several seconds of
+ * buffering headroom if udp_sender_thread stalls momentarily, without
+ * needing a huge amount of memory (each rtp_packet_t is ~1.4KB, so
+ * 512 * ~1.4KB =~ 700KB total - trivial on a Pi 4).
+ */
 #define RTP_PACKET_POOL_SIZE 512
 
 typedef struct

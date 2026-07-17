@@ -4,6 +4,20 @@
 #include "encoded_frame.h"
 #include <pthread.h>
 
+/**
+ * LEGACY / NOT USED BY THE ACTIVE PIPELINE.
+ *
+ * An earlier, generic queue design (predates the split into dedicated
+ * raw_frame_queue.{h,cpp} and encoded_frame_queue.{h,cpp}). Still
+ * compiled (listed in CMakeLists.txt SOURCES) but nothing in main.cpp
+ * or any thread calls these functions anymore. Also note: unlike the
+ * queues actually in use, this one has no shutdown()/wake-up mechanism -
+ * if it were ever wired up to a real consumer thread, that thread's
+ * stop() would deadlock the same way raw_frame_queue/encoded_frame_queue
+ * did before that was fixed (see raw_frame_queue.cpp for the pattern
+ * to copy if this is ever revived instead of deleted).
+ */
+
 #define FRAME_QUEUE_SIZE 64
 
 typedef struct

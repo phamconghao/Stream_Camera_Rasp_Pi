@@ -4,6 +4,8 @@
 #include <cstdint>
 
 /**
+ * PIPELINE STAGE (thread wrapper, final stage): RTP Packet Queue -> [THIS] -> Network
+ *
  * Consumes rtp_packet_queue and sends each packet over UDP to
  * dest_ip:dest_port. Returns 0 on success, -1 on failure (e.g. bad IP).
  *

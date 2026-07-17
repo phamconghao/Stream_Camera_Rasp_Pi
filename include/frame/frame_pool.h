@@ -3,6 +3,18 @@
 
 #include "encoded_frame.h"
 
+/**
+ * LEGACY / NOT USED BY THE ACTIVE PIPELINE.
+ *
+ * An earlier, generic pool design (predates the split into dedicated
+ * raw_frame_pool.{h,cpp} and encoded_frame_pool.{h,cpp}). Still compiled
+ * (listed in CMakeLists.txt SOURCES) but nothing in main.cpp or any
+ * thread calls these functions anymore - the pipeline uses
+ * raw_frame_pool_* / encoded_frame_pool_* instead. Safe to delete once
+ * you've confirmed nothing external depends on it; kept here only so
+ * removing it is a deliberate decision rather than an accidental one.
+ */
+
 #define FRAME_POOL_SIZE 32
 
 int frame_pool_init(void);
