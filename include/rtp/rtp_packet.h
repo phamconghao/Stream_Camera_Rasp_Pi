@@ -27,7 +27,7 @@
 // Ethernet MTU once RTP header + IP/UDP headers are added, avoiding IP
 // fragmentation. NAL units larger than this need FU-A fragmentation
 // (not yet implemented - see rtp_packetizer.cpp).
-#define RTP_MAX_PAYLOAD_SIZE 1400
+#define RTP_MAX_PAYLOAD_SIZE 1200
 #define RTP_MAX_PACKET_SIZE (RTP_HEADER_SIZE + RTP_MAX_PAYLOAD_SIZE)
 
 typedef struct
