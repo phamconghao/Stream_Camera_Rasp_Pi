@@ -564,3 +564,28 @@ int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded)
 
     return 0;
 }
+
+// V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME is a "button" control: writing
+// any value to it (the value itself is ignored) tells the encoder
+// "make the next frame you encode an IDR", independent of whatever
+// GOP/I-frame-period it's otherwise following. VIDIOC_S_CTRL is safe
+// to call concurrently with the QBUF/DQBUF traffic in
+// bcm2835_encoder_encode_frame() from another thread - V4L2 drivers
+// serialize ioctl() calls on the same fd internally, and this control
+// only affects which buffer's output gets marked as a keyframe, not
+// the OUTPUT/CAPTURE queue state itself.
+int bcm2835_encoder_force_keyframe(void)
+{
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME;
+    ctrl.value = 1;
+
+    if (ioctl(g_fd, VIDIOC_S_CTRL, &ctrl) < 0)
+    {
+        perror("S_CTRL FORCE_KEY_FRAME");
+        return -1;
+    }
+
+    return 0;
+}

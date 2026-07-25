@@ -80,6 +80,16 @@ void udp_receiver_cleanup(void)
 {
     if (g_socket_fd >= 0)
     {
+        // shutdown() before close() matters here: closing a fd that
+        // another thread is currently blocked on inside recvfrom() does
+        // NOT reliably wake that thread up on Linux for sockets (unlike
+        // pipes) - it can leave the blocked call hung indefinitely if
+        // the kernel-side socket object still has a pending waiter
+        // registered from before the close. shutdown(SHUT_RDWR)
+        // explicitly aborts any pending recv on this socket and is the
+        // POSIX-correct way to unblock another thread's recvfrom() from
+        // here; close() alone is not sufficient to guarantee that.
+        shutdown(g_socket_fd, SHUT_RDWR);
         close(g_socket_fd);
         g_socket_fd = -1;
     }

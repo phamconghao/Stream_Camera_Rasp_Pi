@@ -8,6 +8,7 @@
 #include "rtp_depacketizer.h"
 #include "encoded_frame_pool.h"
 #include "encoded_frame_queue.h"
+#include "keyframe_requester.h"
 #include "log.h"
 
 /**
@@ -20,7 +21,10 @@
  *   1. If the jitter buffer reports packets were lost right before this
  *      one, discard whatever access unit is mid-reassembly - a gap
  *      means the bitstream from here to the next access unit boundary
- *      is corrupt (see rtp_depacketizer_reset()).
+ *      is corrupt (see rtp_depacketizer_reset()) - and ask the sender
+ *      for a fresh keyframe (Phase 18 recovery, see keyframe_requester.h)
+ *      so the decoder gets back a clean picture quickly instead of
+ *      waiting for the next regularly-scheduled IDR.
  *   2. Lazily acquire an encoded_frame_t on the first packet of a new
  *      access unit.
  *   3. Feed the packet into rtp_depacketizer_process_packet(), which
@@ -77,6 +81,15 @@ static void *rtp_depacketizer_thread_func(void *arg)
                 encoded_frame_pool_release(current_au);
                 current_au = nullptr;
             }
+
+            // Phase 18 recovery: rather than silently waiting for
+            // whatever the next regularly-scheduled IDR happens to be
+            // (which could be several seconds away), ask the sender to
+            // force one now. keyframe_requester_request() is
+            // internally rate-limited, so it's safe to call this on
+            // every single loss event without flooding the control
+            // channel.
+            keyframe_requester_request();
         }
 
         if (!current_au)

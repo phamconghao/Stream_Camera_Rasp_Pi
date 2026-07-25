@@ -27,4 +27,15 @@ int bcm2835_encoder_encode_file(const char *input_file, const char *output_file)
 // Blocking: feeds `raw` in and waits for the hardware to fill `encoded`.
 int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded);
 
+/**
+ * Phase 18 (packet loss recovery): forces the NEXT encoded frame to be
+ * an IDR/keyframe, via the V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME control.
+ * Safe to call from a different thread than the one calling
+ * bcm2835_encoder_encode_frame() - see keyframe_listener_thread.cpp,
+ * which calls this when the receiver signals it lost packets and needs
+ * a fresh keyframe to recover instead of waiting for the next
+ * regularly-scheduled one. Returns 0 on success, -1 on ioctl failure.
+ */
+int bcm2835_encoder_force_keyframe(void);
+
 #endif // __BCM2835_ENCODER_H__

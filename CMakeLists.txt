@@ -75,6 +75,8 @@ set(SOURCES
 
     src/network/udp_sender.cpp
     src/network/udp_sender_thread.cpp
+    src/network/udp_receiver.cpp
+    src/network/keyframe_listener_thread.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp
@@ -111,6 +113,8 @@ set(RECEIVER_SOURCES
 
     src/network/udp_receiver.cpp
     src/network/udp_receiver_thread.cpp
+    src/network/udp_sender.cpp
+    src/network/keyframe_requester.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

@@ -40,12 +40,15 @@ static void *udp_receiver_thread_func(void *arg)
     while (g_udp_rx_running)
     {
         int n = udp_receiver_recv(scratch, sizeof(scratch));
-        if (n < 0)
+        if (n <= 0)
         {
-            // Either a transient recv error or (during shutdown) the
-            // socket was closed out from under us by
-            // udp_receiver_thread_stop() - either way, re-check the
-            // running flag and exit cleanly if it's now false.
+            // n < 0: transient recv error, or (during shutdown) the
+            // socket was shut down/closed out from under us by
+            // udp_receiver_thread_stop(). n == 0: a shutdown() call
+            // (see udp_receiver_cleanup()) makes a pending recvfrom()
+            // return 0 rather than an error - treat the same way.
+            // Either case: re-check the running flag and exit cleanly
+            // if it's now false.
             continue;
         }
 

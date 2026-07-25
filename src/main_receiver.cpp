@@ -13,6 +13,7 @@
 #include "raw_frame_pool.h"
 #include "raw_frame_queue.h"
 #include "yuv_writer.h"
+#include "keyframe_requester.h"
 
 /**
  * ============================================================================
@@ -47,6 +48,13 @@
  * sender-specific state), which is why it's a separate executable
  * target (camera_receiver) rather than folded into main.cpp - the two
  * pipelines never run in the same process.
+ *
+ * CONTROL CHANNEL (Phase 18 - packet loss recovery), separate from the
+ * RTP data path above: network/keyframe_requester.{h,cpp} sends a tiny
+ * UDP message back to the sender's keyframe_listener_thread whenever
+ * rtp_jitter_buffer reports lost packets (see the call in
+ * rtp_depacketizer_thread.cpp), asking it to force an IDR immediately
+ * instead of waiting for the next regularly-scheduled one.
  */
 
 int main(int argc, char **argv)
@@ -55,6 +63,13 @@ int main(int argc, char **argv)
     // match the dest_port the sender (main.cpp) was started with.
     uint16_t listen_port = (argc > 1) ? static_cast<uint16_t>(std::atoi(argv[1])) : 5004;
     const char *output_path = (argc > 2) ? argv[2] : "received.yuv";
+
+    // Where to send keyframe-request control messages: the sender's IP
+    // and the control_port it was started with (see main.cpp). Same
+    // "hardcoded/CLI-provided until RTSP negotiates it" caveat as
+    // dest_ip/dest_port on the sender side.
+    const char *sender_ip = (argc > 3) ? argv[3] : "127.0.0.1";
+    uint16_t control_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 5005;
 
     // This pipeline is fixed at 640x480, same as the sender - see the
     // resolution note in bcm2835_decoder.cpp for why this isn't
@@ -96,6 +111,11 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (keyframe_requester_init(sender_ip, control_port) < 0)
+    {
+        return -1;
+    }
+
     // Start order: consumer threads first (furthest downstream to
     // furthest upstream), THEN the producer (UDP receiver) - so nothing
     // is ever pushed into a queue/buffer before its consumer thread
@@ -122,6 +142,7 @@ int main(int argc, char **argv)
 
     std::cout << "Listening for RTP on port " << listen_port
               << ", writing decoded frames to " << output_path << std::endl;
+    std::cout << "Keyframe requests will be sent to " << sender_ip << ":" << control_port << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -151,6 +172,8 @@ int main(int argc, char **argv)
 
     rtp_jitter_buffer_cleanup();
     rtp_packet_pool_cleanup();
+
+    keyframe_requester_cleanup();
 
     return 0;
 }

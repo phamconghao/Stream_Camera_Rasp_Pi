@@ -18,6 +18,7 @@
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
 #include "udp_sender_thread.h"
+#include "keyframe_listener_thread.h"
 
 /**
  * ============================================================================
@@ -51,9 +52,18 @@
  * encoder_thread.cpp) - app_state::g_running (below) is a separate,
  * app-wide flag only main() writes to.
  *
+ * CONTROL CHANNEL (Phase 18 - packet loss recovery), separate from the
+ * RTP data path above: network/keyframe_listener_thread.{h,cpp} listens
+ * on `control_port` for a tiny UDP message from the receiver's
+ * keyframe_requester (sent whenever its jitter buffer detects lost
+ * packets), and calls bcm2835_encoder_force_keyframe() so the receiver
+ * can recover a clean picture quickly instead of waiting for the next
+ * regularly-scheduled IDR.
+ *
  * NOT YET IMPLEMENTED (see roadmap): RTSP Server (would replace the
  * hardcoded dest_ip/dest_port below with per-client negotiation) and
- * RTCP (receiver feedback / loss reporting).
+ * full RTCP (this project only has a minimal one-way keyframe-request
+ * signal so far, not RFC 3550 Receiver/Sender Reports).
  */
 
 // Dead code: an earlier, simpler alternative to rtp_packetizer_thread
@@ -88,6 +98,13 @@ int main(int argc, char **argv)
     // address per session (SETUP request) instead of a fixed target.
     const char *dest_ip = (argc > 1) ? argv[1] : "127.0.0.1";
     uint16_t dest_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 5004;
+
+    // Control channel port this sender listens on for keyframe-request
+    // datagrams from the receiver (see keyframe_listener_thread.h).
+    // Independent of dest_port (which is where WE send RTP data TO) -
+    // this is where WE receive control messages FROM. Must match the
+    // control_port argument passed to camera_receiver.
+    uint16_t control_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 5005;
 
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
@@ -172,6 +189,11 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (keyframe_listener_thread_start(control_port) < 0)
+    {
+        return -1;
+    }
+
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -185,6 +207,8 @@ int main(int argc, char **argv)
     //   2. Stop the encoder thread (drains raw queue, then exits)
     //   3. Stop the RTP packetizer thread (drains encoded queue, then exits)
     //   4. Stop the UDP sender thread (drains RTP packet queue, then exits)
+    //   5. Stop the keyframe listener thread (independent control channel,
+    //      order relative to the others above doesn't matter)
     g_running = false;
 
     camera_capture_stop();
@@ -195,6 +219,8 @@ int main(int argc, char **argv)
     rtp_packetizer_thread_stop();
 
     udp_sender_thread_stop();
+
+    keyframe_listener_thread_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
