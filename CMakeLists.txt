@@ -34,6 +34,7 @@ include_directories(
 
     include/capture
     include/encoder
+    include/decoder
     include/frame
     include/writer
     include/parser
@@ -80,11 +81,52 @@ set(SOURCES
 )
 
 #
-# Executable
+# Receiver pipeline sources (RTP receiver + hardware decoder). Separate
+# executable from camera_app: no libcamera/capture/encoder dependency,
+# just the receive-side network/RTP/decoder/writer stages. Reuses the
+# same frame/rtp_packet pool+queue source files as camera_app (they're
+# plain data structures, nothing sender-specific), and the two
+# executables never link together / never run in the same process.
+#
+set(RECEIVER_SOURCES
+
+    src/main_receiver.cpp
+
+    src/decoder/decoder_thread.cpp
+    src/decoder/bcm2835_decoder.cpp
+
+    src/frame/frame_pool.cpp
+    src/frame/frame_queue.cpp
+    src/frame/raw_frame_pool.cpp
+    src/frame/raw_frame_queue.cpp
+    src/frame/encoded_frame_pool.cpp
+    src/frame/encoded_frame_queue.cpp
+
+    src/writer/yuv_writer.cpp
+
+    src/rtp/rtp_depacketizer.cpp
+    src/rtp/rtp_depacketizer_thread.cpp
+    src/rtp/rtp_jitter_buffer.cpp
+    src/rtp/rtp_packet_pool.cpp
+
+    src/network/udp_receiver.cpp
+    src/network/udp_receiver_thread.cpp
+
+    src/common/app_state.cpp
+    src/common/log.cpp
+)
+
+#
+# Executables
 #
 add_executable(
     camera_app
     ${SOURCES}
+)
+
+add_executable(
+    camera_receiver
+    ${RECEIVER_SOURCES}
 )
 
 #
@@ -96,6 +138,12 @@ target_link_libraries(
     pthread
 
     ${LIBCAMERA_LIBRARIES}
+)
+
+target_link_libraries(
+    camera_receiver
+
+    pthread
 )
 
 #
