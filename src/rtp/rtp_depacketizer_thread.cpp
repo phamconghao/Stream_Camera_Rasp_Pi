@@ -38,7 +38,11 @@ static const char *TAG = "DEPKT_THREAD";
 // yuv_writer.cpp for the decoded side) - lets you verify the
 // depacketizer's reassembly independently of whether the decoder
 // itself is working, e.g. by feeding this file to `ffplay received.h264`.
-#define H264_DUMP_PATH "/home/claude/received.h264"
+// Relative path: written into the current working directory the
+// receiver was launched from (same convention as yuv_writer's
+// output_path argument), so this works on any machine/user account
+// rather than a path specific to one development environment.
+#define H264_DUMP_PATH "received.h264"
 
 static pthread_t g_depacketizer_thread;
 static std::atomic<bool> g_depacketizer_running(false);
