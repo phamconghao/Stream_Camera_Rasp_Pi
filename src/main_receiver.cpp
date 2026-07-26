@@ -13,7 +13,8 @@
 #include "raw_frame_pool.h"
 #include "raw_frame_queue.h"
 #include "yuv_writer.h"
-#include "keyframe_requester.h"
+#include "control_channel.h"
+#include "loss_reporter_thread.h"
 
 /**
  * ============================================================================
@@ -49,12 +50,17 @@
  * target (camera_receiver) rather than folded into main.cpp - the two
  * pipelines never run in the same process.
  *
- * CONTROL CHANNEL (Phase 18 - packet loss recovery), separate from the
- * RTP data path above: network/keyframe_requester.{h,cpp} sends a tiny
- * UDP message back to the sender's keyframe_listener_thread whenever
- * rtp_jitter_buffer reports lost packets (see the call in
- * rtp_depacketizer_thread.cpp), asking it to force an IDR immediately
- * instead of waiting for the next regularly-scheduled one.
+ * CONTROL CHANNEL (Phase 18 packet-loss recovery + adaptive bitrate),
+ * separate from the RTP data path above: network/control_channel.{h,cpp}
+ * sends two kinds of UDP messages back to the sender's
+ * control_listener_thread:
+ *   - keyframe request, whenever rtp_jitter_buffer reports lost packets
+ *     (see the call in rtp_depacketizer_thread.cpp), asking the sender
+ *     to force an IDR immediately instead of waiting for the next
+ *     regularly-scheduled one.
+ *   - loss report, sent periodically by loss_reporter_thread.{h,cpp}
+ *     (reads rtp_jitter_buffer's cumulative stats), driving the
+ *     sender's adaptive bitrate decision.
  */
 
 int main(int argc, char **argv)
@@ -111,7 +117,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    if (keyframe_requester_init(sender_ip, control_port) < 0)
+    if (control_channel_init(sender_ip, control_port) < 0)
     {
         return -1;
     }
@@ -140,9 +146,15 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (loss_reporter_thread_start() < 0)
+    {
+        return -1;
+    }
+
     std::cout << "Listening for RTP on port " << listen_port
               << ", writing decoded frames to " << output_path << std::endl;
-    std::cout << "Keyframe requests will be sent to " << sender_ip << ":" << control_port << std::endl;
+    std::cout << "Keyframe requests and loss reports will be sent to "
+              << sender_ip << ":" << control_port << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -154,6 +166,8 @@ int main(int argc, char **argv)
     //   2. Stop the depacketizer thread (drains the jitter buffer, then exits)
     //   3. Stop the decoder thread (drains the encoded queue, then exits)
     //   4. Stop the YUV writer thread (drains the raw queue, then exits)
+    //   5. Stop the loss reporter thread (independent timer, order
+    //      relative to the others above doesn't matter)
     g_running = false;
 
     udp_receiver_thread_stop();
@@ -164,6 +178,8 @@ int main(int argc, char **argv)
 
     yuv_writer_stop();
 
+    loss_reporter_thread_stop();
+
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
 
@@ -173,7 +189,7 @@ int main(int argc, char **argv)
     rtp_jitter_buffer_cleanup();
     rtp_packet_pool_cleanup();
 
-    keyframe_requester_cleanup();
+    control_channel_cleanup();
 
     return 0;
 }

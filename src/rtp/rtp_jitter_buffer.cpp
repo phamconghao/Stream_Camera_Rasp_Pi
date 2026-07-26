@@ -29,6 +29,12 @@ static bool g_shutting_down;
 static pthread_mutex_t g_lock;
 static pthread_cond_t g_cond;
 
+// Cumulative since init - see rtp_jitter_buffer_get_stats(). Not reset
+// by clear_all_slots_locked()'s resync path: a big discontinuity is
+// itself evidence of loss, tracked separately below where it happens.
+static uint32_t g_total_received;
+static uint32_t g_total_lost;
+
 static inline int slot_index(uint16_t seq)
 {
     return static_cast<int>(seq) & (JITTER_BUFFER_CAPACITY - 1);
@@ -80,6 +86,8 @@ int rtp_jitter_buffer_init(void)
     g_seq_initialized = false;
     g_occupied_count = 0;
     g_shutting_down = false;
+    g_total_received = 0;
+    g_total_lost = 0;
 
     pthread_mutex_init(&g_lock, nullptr);
     pthread_cond_init(&g_cond, nullptr);
@@ -158,6 +166,7 @@ void rtp_jitter_buffer_push(rtp_packet_t *packet)
     g_slots[index].occupied = true;
     g_slots[index].arrival_us = time_utils_now_us();
     g_occupied_count++;
+    g_total_received++;
 
     pthread_cond_signal(&g_cond);
     pthread_mutex_unlock(&g_lock);
@@ -219,6 +228,7 @@ rtp_packet_t *rtp_jitter_buffer_pop(uint32_t *out_lost_count)
                      g_next_expected, static_cast<unsigned long long>(elapsed_ms));
             g_next_expected++;
             lost++;
+            g_total_lost++;
             continue;
         }
 
@@ -245,5 +255,22 @@ void rtp_jitter_buffer_shutdown(void)
     pthread_mutex_lock(&g_lock);
     g_shutting_down = true;
     pthread_cond_broadcast(&g_cond);
+    pthread_mutex_unlock(&g_lock);
+}
+
+void rtp_jitter_buffer_get_stats(uint32_t *out_received, uint32_t *out_lost)
+{
+    pthread_mutex_lock(&g_lock);
+
+    if (out_received)
+    {
+        *out_received = g_total_received;
+    }
+
+    if (out_lost)
+    {
+        *out_lost = g_total_lost;
+    }
+
     pthread_mutex_unlock(&g_lock);
 }

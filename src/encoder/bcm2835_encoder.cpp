@@ -589,3 +589,23 @@ int bcm2835_encoder_force_keyframe(void)
 
     return 0;
 }
+
+// V4L2_CID_MPEG_VIDEO_BITRATE takes effect on subsequently encoded
+// frames without needing to reinitialize the device or drop any
+// buffers already in flight - safe to call live, same as
+// FORCE_KEY_FRAME above.
+int bcm2835_encoder_set_bitrate(uint32_t bitrate_bps)
+{
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE;
+    ctrl.value = static_cast<int32_t>(bitrate_bps);
+
+    if (ioctl(g_fd, VIDIOC_S_CTRL, &ctrl) < 0)
+    {
+        perror("S_CTRL BITRATE");
+        return -1;
+    }
+
+    return 0;
+}

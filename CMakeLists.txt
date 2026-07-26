@@ -76,7 +76,7 @@ set(SOURCES
     src/network/udp_sender.cpp
     src/network/udp_sender_thread.cpp
     src/network/udp_receiver.cpp
-    src/network/keyframe_listener_thread.cpp
+    src/network/control_listener_thread.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp
@@ -110,11 +110,12 @@ set(RECEIVER_SOURCES
     src/rtp/rtp_depacketizer_thread.cpp
     src/rtp/rtp_jitter_buffer.cpp
     src/rtp/rtp_packet_pool.cpp
+    src/rtp/loss_reporter_thread.cpp
 
     src/network/udp_receiver.cpp
     src/network/udp_receiver_thread.cpp
     src/network/udp_sender.cpp
-    src/network/keyframe_requester.cpp
+    src/network/control_channel.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

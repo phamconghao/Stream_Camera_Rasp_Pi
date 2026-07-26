@@ -38,4 +38,14 @@ int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded);
  */
 int bcm2835_encoder_force_keyframe(void);
 
+/**
+ * Idea #1 (adaptive bitrate): changes the encoder's target bitrate live,
+ * via V4L2_CID_MPEG_VIDEO_BITRATE. Called by control_listener_thread
+ * when the receiver reports a loss rate (see network/control_listener_thread.h)
+ * high enough to warrant backing off, or low enough to step back up.
+ * Safe to call from a different thread than bcm2835_encoder_encode_frame(),
+ * same reasoning as bcm2835_encoder_force_keyframe(). Returns 0/-1.
+ */
+int bcm2835_encoder_set_bitrate(uint32_t bitrate_bps);
+
 #endif // __BCM2835_ENCODER_H__

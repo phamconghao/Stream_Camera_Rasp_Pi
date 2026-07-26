@@ -89,4 +89,14 @@ rtp_packet_t *rtp_jitter_buffer_pop(uint32_t *out_lost_count);
  */
 void rtp_jitter_buffer_shutdown(void);
 
+/**
+ * Cumulative counters since rtp_jitter_buffer_init(): total packets
+ * successfully accepted into the buffer, and total sequence numbers
+ * declared lost (via the timeout path in rtp_jitter_buffer_pop(), same
+ * count as summed out_lost_count across every pop() call). Used by
+ * loss_reporter_thread to compute a loss rate for the sender's adaptive
+ * bitrate control channel - see network/loss_reporter_thread.h.
+ */
+void rtp_jitter_buffer_get_stats(uint32_t *out_received, uint32_t *out_lost);
+
 #endif // __RTP_JITTER_BUFFER_H__

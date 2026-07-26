@@ -18,7 +18,7 @@
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
 #include "udp_sender_thread.h"
-#include "keyframe_listener_thread.h"
+#include "control_listener_thread.h"
 
 /**
  * ============================================================================
@@ -52,18 +52,25 @@
  * encoder_thread.cpp) - app_state::g_running (below) is a separate,
  * app-wide flag only main() writes to.
  *
- * CONTROL CHANNEL (Phase 18 - packet loss recovery), separate from the
- * RTP data path above: network/keyframe_listener_thread.{h,cpp} listens
- * on `control_port` for a tiny UDP message from the receiver's
- * keyframe_requester (sent whenever its jitter buffer detects lost
- * packets), and calls bcm2835_encoder_force_keyframe() so the receiver
- * can recover a clean picture quickly instead of waiting for the next
- * regularly-scheduled IDR.
+ * CONTROL CHANNEL (Phase 18 packet-loss recovery + adaptive bitrate),
+ * separate from the RTP data path above: network/control_listener_thread.{h,cpp}
+ * listens on `control_port` for two kinds of UDP messages from the
+ * receiver's control_channel (network/control_channel.h):
+ *   - keyframe request (sent whenever the receiver's jitter buffer
+ *     detects lost packets) -> bcm2835_encoder_force_keyframe(), so the
+ *     receiver recovers a clean picture quickly instead of waiting for
+ *     the next regularly-scheduled IDR.
+ *   - loss report (sent periodically by the receiver's
+ *     loss_reporter_thread) -> maps the reported loss rate to a target
+ *     bitrate tier and applies it via bcm2835_encoder_set_bitrate() if
+ *     it changed, so the stream backs off automatically under bad
+ *     network conditions instead of continuing to send at a rate the
+ *     link can't sustain.
  *
  * NOT YET IMPLEMENTED (see roadmap): RTSP Server (would replace the
  * hardcoded dest_ip/dest_port below with per-client negotiation) and
- * full RTCP (this project only has a minimal one-way keyframe-request
- * signal so far, not RFC 3550 Receiver/Sender Reports).
+ * full RTCP (this project only has the minimal control_channel above
+ * so far, not RFC 3550 Receiver/Sender Reports).
  */
 
 // Dead code: an earlier, simpler alternative to rtp_packetizer_thread
@@ -100,7 +107,7 @@ int main(int argc, char **argv)
     uint16_t dest_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 5004;
 
     // Control channel port this sender listens on for keyframe-request
-    // datagrams from the receiver (see keyframe_listener_thread.h).
+    // datagrams from the receiver (see control_listener_thread.h).
     // Independent of dest_port (which is where WE send RTP data TO) -
     // this is where WE receive control messages FROM. Must match the
     // control_port argument passed to camera_receiver.
@@ -189,7 +196,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    if (keyframe_listener_thread_start(control_port) < 0)
+    if (control_listener_thread_start(control_port) < 0)
     {
         return -1;
     }
@@ -220,7 +227,7 @@ int main(int argc, char **argv)
 
     udp_sender_thread_stop();
 
-    keyframe_listener_thread_stop();
+    control_listener_thread_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
