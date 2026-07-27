@@ -105,6 +105,7 @@ set(RECEIVER_SOURCES
     src/frame/encoded_frame_queue.cpp
 
     src/writer/yuv_writer.cpp
+    src/writer/circular_h264_writer.cpp
 
     src/rtp/rtp_depacketizer.cpp
     src/rtp/rtp_depacketizer_thread.cpp

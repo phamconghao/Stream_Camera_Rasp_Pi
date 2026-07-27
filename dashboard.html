@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Pipeline Dashboard</title>
+<style>
+  body {
+    background: #111;
+    color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 24px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 18px; color: #9aa; margin-bottom: 20px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    margin: 0 0 6px 0;
+    font-weight: 500;
+  }
+  .card .value {
+    font-size: 26px;
+    font-weight: 600;
+  }
+  .card .unit { font-size: 14px; color: #888; margin-left: 4px; }
+  .ok { color: #4ade80; }
+  .warn { color: #facc15; }
+  .bad { color: #f87171; }
+  .stale { opacity: 0.4; }
+  #status { margin-top: 16px; font-size: 12px; color: #666; }
+  .role-toggle { margin-bottom: 16px; }
+  .role-toggle button {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    color: #ccc;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    margin-right: 8px;
+  }
+  .role-toggle button.active { background: #2a2a4a; border-color: #4a4a8a; color: #cdf; }
+</style>
+</head>
+<body>
+  <h1>Camera Pipeline Dashboard</h1>
+
+  <div class="role-toggle">
+    <button id="btn-sender" class="active">Sender (sender_stats.json)</button>
+    <button id="btn-receiver">Receiver (receiver_stats.json)</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <div id="status">Đang kết nối...</div>
+
+  <script>
+    let currentFile = 'sender_stats.json';
+
+    document.getElementById('btn-sender').onclick = () => {
+      currentFile = 'sender_stats.json';
+      setActive('btn-sender');
+    };
+    document.getElementById('btn-receiver').onclick = () => {
+      currentFile = 'receiver_stats.json';
+      setActive('btn-receiver');
+    };
+
+    function setActive(id) {
+      document.querySelectorAll('.role-toggle button').forEach(b => b.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+    }
+
+    function card(title, value, unit, cls) {
+      return `<div class="card"><h2>${title}</h2><div class="value ${cls || ''}">${value}<span class="unit">${unit || ''}</span></div></div>`;
+    }
+
+    function renderSender(d) {
+      const tierClass = d.bitrate_tier === 'HIGH' ? 'ok' : (d.bitrate_tier === 'MEDIUM' ? 'warn' : 'bad');
+      document.getElementById('grid').innerHTML =
+        card('Bitrate', (d.bitrate_bps / 1000).toFixed(0), 'kbps', tierClass) +
+        card('Tier', d.bitrate_tier, '', tierClass) +
+        card('Keyframe requests', d.keyframe_requests_total, 'total');
+    }
+
+    function renderReceiver(d) {
+      const lossPct = (d.loss_permille / 10).toFixed(1);
+      const lossClass = d.loss_permille >= 50 ? 'bad' : (d.loss_permille >= 10 ? 'warn' : 'ok');
+      document.getElementById('grid').innerHTML =
+        card('Loss rate', lossPct, '%', lossClass) +
+        card('FPS', d.fps.toFixed(1), 'fps') +
+        card('Decoded frames', d.decoded_frames_total, 'total');
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch(currentFile + '?_=' + Date.now());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+
+        if (d.role === 'sender') renderSender(d);
+        else renderReceiver(d);
+
+        const ageMs = Date.now() - (d.updated_at_us / 1000);
+        const stale = ageMs > 5000;
+        document.getElementById('status').textContent =
+          stale ? `Dữ liệu cũ (${(ageMs / 1000).toFixed(0)}s trước) - pipeline có đang chạy không?`
+                : `Cập nhật ${(ageMs / 1000).toFixed(1)}s trước`;
+        document.getElementById('grid').classList.toggle('stale', stale);
+      } catch (e) {
+        document.getElementById('status').textContent = 'Không đọc được ' + currentFile + ': ' + e.message;
+      }
+    }
+
+    poll();
+    setInterval(poll, 1000);
+  </script>
+</body>
+</html>

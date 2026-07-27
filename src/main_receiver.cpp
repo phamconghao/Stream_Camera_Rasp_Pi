@@ -15,6 +15,8 @@
 #include "yuv_writer.h"
 #include "control_channel.h"
 #include "loss_reporter_thread.h"
+#include "circular_h264_writer.h"
+#include <cstring>
 
 /**
  * ============================================================================
@@ -30,7 +32,8 @@
  *   RTP Jitter Buffer        <- rtp/rtp_jitter_buffer.{h,cpp}        (sequence reordering + loss detection)
  *     |
  *   RTP Depacketizer Thread  <- rtp/rtp_depacketizer_thread.{h,cpp} + rtp/rtp_depacketizer.{h,cpp}
- *     |    (also dumps the reassembled elementary stream to received.h264 for offline verification)
+ *     |    (also mirrors each completed access unit into circular_h264_writer -
+ *     |     Idea #4, bounded rotating "dashcam" storage; see writer/circular_h264_writer.h)
  *     |
  *   Encoded Frame Pool/Queue <- frame/encoded_frame*.{h,cpp}          (same struct type as the sender side)
  *     |
@@ -76,6 +79,16 @@ int main(int argc, char **argv)
     // dest_ip/dest_port on the sender side.
     const char *sender_ip = (argc > 3) ? argv[3] : "127.0.0.1";
     uint16_t control_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 5005;
+
+    // Idea #4 (dashcam-style recording): directory circular_h264_writer
+    // rotates segments into. Pass "none" to disable recording entirely.
+    // Defaults to keeping the last 10 minutes (10 segments x 60s) -
+    // strictly bounded, unlike the single ever-growing received.h264
+    // dump this replaced.
+    const char *recording_dir = (argc > 5) ? argv[5] : "recordings";
+    int segment_duration_sec = (argc > 6) ? std::atoi(argv[6]) : 60;
+    int max_segments = (argc > 7) ? std::atoi(argv[7]) : 10;
+    bool recording_disabled = (std::strcmp(recording_dir, "none") == 0);
 
     // This pipeline is fixed at 640x480, same as the sender - see the
     // resolution note in bcm2835_decoder.cpp for why this isn't
@@ -136,7 +149,8 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    if (rtp_depacketizer_thread_start() < 0)
+    if (rtp_depacketizer_thread_start(recording_disabled ? nullptr : recording_dir,
+                                       segment_duration_sec, max_segments) < 0)
     {
         return -1;
     }
@@ -155,6 +169,12 @@ int main(int argc, char **argv)
               << ", writing decoded frames to " << output_path << std::endl;
     std::cout << "Keyframe requests and loss reports will be sent to "
               << sender_ip << ":" << control_port << std::endl;
+    if (!recording_disabled)
+    {
+        std::cout << "Recording last " << (segment_duration_sec * max_segments / 60)
+                  << " minute(s) to " << recording_dir << "/ (" << max_segments
+                  << " x " << segment_duration_sec << "s segments)" << std::endl;
+    }
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();

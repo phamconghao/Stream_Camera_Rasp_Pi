@@ -9,6 +9,7 @@
 #include "encoded_frame_pool.h"
 #include "encoded_frame_queue.h"
 #include "control_channel.h"
+#include "circular_h264_writer.h"
 #include "log.h"
 
 /**
@@ -30,27 +31,20 @@
  *   3. Feed the packet into rtp_depacketizer_process_packet(), which
  *      appends reconstructed NAL bytes into the access unit buffer.
  *   4. On marker bit (access unit complete): push it to
- *      encoded_frame_queue for decoder_thread, optionally mirror the
- *      raw Annex-B bytes to disk for offline inspection, and reset
+ *      encoded_frame_queue for decoder_thread, mirror the raw Annex-B
+ *      bytes into circular_h264_writer (Idea #4 - bounded, rotating
+ *      storage; skipped entirely if recording is disabled), bump the
+ *      completed-frame counter (Idea #3 - dashboard fps), and reset
  *      state for the next access unit.
  *   5. Release the rtp_packet_t back to its pool either way.
  */
 
 static const char *TAG = "DEPKT_THREAD";
 
-// Elementary-stream dump alongside the decoded YUV output (see
-// yuv_writer.cpp for the decoded side) - lets you verify the
-// depacketizer's reassembly independently of whether the decoder
-// itself is working, e.g. by feeding this file to `ffplay received.h264`.
-// Relative path: written into the current working directory the
-// receiver was launched from (same convention as yuv_writer's
-// output_path argument), so this works on any machine/user account
-// rather than a path specific to one development environment.
-#define H264_DUMP_PATH "received.h264"
-
 static pthread_t g_depacketizer_thread;
 static std::atomic<bool> g_depacketizer_running(false);
-static FILE *g_h264_dump = nullptr;
+static bool g_recording_enabled = false;
+static std::atomic<uint32_t> g_completed_count(0);
 
 static void *rtp_depacketizer_thread_func(void *arg)
 {
@@ -111,14 +105,15 @@ static void *rtp_depacketizer_thread_func(void *arg)
         {
             LOG_INFO(TAG, "access unit complete, size=%zu", current_au->size);
 
-            if (g_h264_dump && current_au->size > 0)
+            if (g_recording_enabled && current_au->size > 0)
             {
-                fwrite(current_au->data, 1, current_au->size, g_h264_dump);
-                fflush(g_h264_dump);
+                circular_h264_writer_write(current_au->data, current_au->size);
             }
 
             if (current_au->size > 0)
             {
+                g_completed_count++;
+
                 if (encoded_frame_queue_push(current_au) < 0)
                 {
                     LOG_WARN(TAG, "encoded frame queue full, dropping access unit");
@@ -148,12 +143,27 @@ static void *rtp_depacketizer_thread_func(void *arg)
     return nullptr;
 }
 
-int rtp_depacketizer_thread_start(void)
+int rtp_depacketizer_thread_start(const char *recording_dir, int segment_duration_sec, int max_segments)
 {
-    g_h264_dump = fopen(H264_DUMP_PATH, "wb");
-    if (!g_h264_dump)
+    g_completed_count = 0;
+
+    if (recording_dir)
     {
-        LOG_WARN(TAG, "could not open %s for h264 dump - continuing without it", H264_DUMP_PATH);
+        if (circular_h264_writer_init(recording_dir, segment_duration_sec, max_segments) == 0)
+        {
+            g_recording_enabled = true;
+            LOG_INFO(TAG, "recording enabled: dir=%s segment=%ds max_segments=%d",
+                     recording_dir, segment_duration_sec, max_segments);
+        }
+        else
+        {
+            LOG_WARN(TAG, "failed to enable recording in %s - continuing without it", recording_dir);
+            g_recording_enabled = false;
+        }
+    }
+    else
+    {
+        g_recording_enabled = false;
     }
 
     g_depacketizer_running = true;
@@ -179,9 +189,13 @@ void rtp_depacketizer_thread_stop(void)
 
     pthread_join(g_depacketizer_thread, nullptr);
 
-    if (g_h264_dump)
+    if (g_recording_enabled)
     {
-        fclose(g_h264_dump);
-        g_h264_dump = nullptr;
+        circular_h264_writer_cleanup();
     }
+}
+
+uint32_t rtp_depacketizer_thread_get_completed_count(void)
+{
+    return g_completed_count;
 }

@@ -7,12 +7,20 @@
 #include "control_protocol.h"
 #include "udp_receiver.h"
 #include "bcm2835_encoder.h"
+#include "time_utils.h"
 #include "log.h"
 
 static const char *TAG = "CTRL_LISTEN";
 
 static pthread_t g_thread;
 static std::atomic<bool> g_running(false);
+static std::atomic<uint32_t> g_keyframe_requests_total(0);
+
+// Idea #3 (monitoring dashboard): where the sender's live stats get
+// written every time a control message is handled, for dashboard.html
+// to poll via fetch(). See loss_reporter_thread.cpp for the matching
+// receiver-side file.
+static constexpr const char *STATS_PATH = "sender_stats.json";
 
 /**
  * Bitrate tiers for the adaptive-bitrate extension. Deliberately coarse
@@ -84,6 +92,29 @@ static const char *tier_name(bitrate_tier_t tier)
     }
 }
 
+static void write_stats_json(void)
+{
+    FILE *f = fopen(STATS_PATH, "w");
+    if (!f)
+    {
+        return;
+    }
+
+    fprintf(f,
+            "{\n"
+            "  \"role\": \"sender\",\n"
+            "  \"bitrate_bps\": %u,\n"
+            "  \"bitrate_tier\": \"%s\",\n"
+            "  \"keyframe_requests_total\": %u,\n"
+            "  \"updated_at_us\": %llu\n"
+            "}\n",
+            bps_for_tier(g_current_tier), tier_name(g_current_tier),
+            g_keyframe_requests_total.load(),
+            static_cast<unsigned long long>(time_utils_now_us()));
+
+    fclose(f);
+}
+
 static void handle_loss_report(const control_loss_report_t *report)
 {
     uint32_t loss_permille = ntohl(report->loss_permille_be);
@@ -112,6 +143,8 @@ static void handle_loss_report(const control_loss_report_t *report)
     {
         LOG_WARN(TAG, "failed to apply bitrate tier %s", tier_name(new_tier));
     }
+
+    write_stats_json();
 }
 
 static void *control_listener_thread_func(void *arg)
@@ -141,6 +174,8 @@ static void *control_listener_thread_func(void *arg)
         {
             LOG_INFO(TAG, "keyframe request received - forcing IDR on next frame");
             bcm2835_encoder_force_keyframe();
+            g_keyframe_requests_total++;
+            write_stats_json();
         }
         else if (n == static_cast<int>(sizeof(control_loss_report_t)) &&
                  scratch[0] == CONTROL_MSG_LOSS_REPORT)
