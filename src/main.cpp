@@ -103,7 +103,7 @@ int main(int argc, char **argv)
     // Destination for the UDP sender. Hardcoded/CLI-provided for now;
     // once the RTSP server exists, it will negotiate the real client
     // address per session (SETUP request) instead of a fixed target.
-    const char *dest_ip = (argc > 1) ? argv[1] : "127.0.0.1";
+    const char *dest_ip = (argc > 1) ? argv[1] : "192.168.1.100";
     uint16_t dest_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 5004;
 
     // Control channel port this sender listens on for keyframe-request
