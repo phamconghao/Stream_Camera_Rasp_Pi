@@ -86,3 +86,13 @@ void control_channel_report_loss(uint32_t loss_permille)
 
     LOG_INFO(TAG, "reported loss rate %u.%u%% to sender", loss_permille / 10, loss_permille % 10);
 }
+
+int control_channel_send_raw(const uint8_t *data, size_t size)
+{
+    if (!g_initialized)
+    {
+        return -1;
+    }
+
+    return udp_sender_send(data, size);
+}

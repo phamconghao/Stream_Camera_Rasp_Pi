@@ -43,7 +43,7 @@ static const char *TAG = "RTP";
 
 static pthread_t g_rtp_thread;
 static uint16_t g_rtp_sequence = 0;   // increments by 1 per RTP packet (wraps naturally at 65535 -> 0, which is valid RTP behavior)
-static uint32_t g_rtp_timestamp = 0;  // increments by RTP_TIMESTAMP_STEP once per access unit (frame), shared by every NAL/fragment in that frame
+static std::atomic<uint32_t> g_rtp_timestamp(0);  // increments by RTP_TIMESTAMP_STEP once per access unit (frame), shared by every NAL/fragment in that frame; atomic since rtcp_sender_thread also reads it via rtp_packetizer_thread_get_last_timestamp()
 
 static constexpr uint32_t RTP_CLOCK = 90000;   // RFC 6184 mandates a 90kHz clock rate for H.264 RTP timestamps
 static constexpr uint32_t FRAME_RATE = 30;     // assumed capture frame rate; not yet derived from the actual camera config
@@ -236,4 +236,14 @@ void rtp_packetizer_thread_stop(void)
     encoded_frame_queue_shutdown();
 
     pthread_join(g_rtp_thread, nullptr);
+}
+
+uint32_t rtp_packetizer_thread_get_ssrc(void)
+{
+    return RTP_SSRC;
+}
+
+uint32_t rtp_packetizer_thread_get_last_timestamp(void)
+{
+    return g_rtp_timestamp;
 }

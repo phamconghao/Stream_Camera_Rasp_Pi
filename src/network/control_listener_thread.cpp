@@ -7,6 +7,7 @@
 #include "control_protocol.h"
 #include "udp_receiver.h"
 #include "bcm2835_encoder.h"
+#include "rtcp_packet.h"
 #include "time_utils.h"
 #include "log.h"
 
@@ -147,13 +148,30 @@ static void handle_loss_report(const control_loss_report_t *report)
     write_stats_json();
 }
 
+static void handle_rtcp_rr(const rtcp_rr_t *rr)
+{
+    // Phase 19: this project's bitrate adaptation still runs off the
+    // ad-hoc CONTROL_MSG_LOSS_REPORT above (Phase 18/Idea #1), not this
+    // standards-compliant RR - the two report similar information via
+    // different paths. Real RTCP is logged here for interoperability
+    // and observability value (a tool like Wireshark can decode it),
+    // not (yet) wired into any decision this sender makes.
+    uint32_t frac_and_cum = ntohl(rr->block.fraction_lost_and_cumulative_be);
+    uint8_t fraction = (frac_and_cum >> 24) & 0xFF;
+    uint32_t cumulative = frac_and_cum & 0x00FFFFFF;
+    uint32_t jitter = ntohl(rr->block.jitter_be);
+
+    LOG_INFO(TAG, "RTCP RR received: fraction_lost=%u/256 cumulative_lost=%u jitter=%u",
+             fraction, cumulative, jitter);
+}
+
 static void *control_listener_thread_func(void *arg)
 {
     (void)arg;
 
     LOG_INFO(TAG, "thread started");
 
-    uint8_t scratch[16]; // largest message today (control_loss_report_t) is 5 bytes; generous headroom
+    uint8_t scratch[64]; // largest message today (rtcp_rr_t) is 32 bytes; generous headroom
 
     while (g_running)
     {
@@ -170,7 +188,11 @@ static void *control_listener_thread_func(void *arg)
             continue;
         }
 
-        if (n >= 1 && scratch[0] == CONTROL_MSG_KEYFRAME_REQUEST)
+        if (rtcp_is_rr(scratch, static_cast<size_t>(n)))
+        {
+            handle_rtcp_rr(reinterpret_cast<const rtcp_rr_t *>(scratch));
+        }
+        else if (n >= 1 && scratch[0] == CONTROL_MSG_KEYFRAME_REQUEST)
         {
             LOG_INFO(TAG, "keyframe request received - forcing IDR on next frame");
             bcm2835_encoder_force_keyframe();

@@ -5,7 +5,7 @@
 > khác với file này — **file này mới là đúng**, vì mọi dòng dưới đây đều được đối chiếu trực tiếp với
 > source code và build/test thật, không dựa trên trí nhớ hay suy đoán.
 >
-> Cập nhật lần cuối: dựa trên commit `feb9c17` (nhánh `csi_camera_streaming`).
+> Cập nhật lần cuối: dựa trên commit `aeec0a1` (nhánh `csi_camera_streaming`) + Phase 19 (RTCP) hoàn thành trong phiên làm việc này.
 
 ## Lưu ý về Phase 1-11
 
@@ -30,7 +30,7 @@ multi-client fan-out ở bất kỳ đâu trong source code. Đây rất có th�
 | — | *(mở rộng ngoài roadmap gốc)* Adaptive bitrate | ✅ Done | `loss_reporter_thread` tính loss rate → `control_channel` báo cáo → sender áp `bcm2835_encoder_set_bitrate()` theo 3 tier (2Mbps/1Mbps/500kbps) |
 | — | *(mở rộng)* Monitoring dashboard | ✅ Done | `dashboard.html` + `sender_stats.json`/`receiver_stats.json` (bitrate, loss%, fps, tổng keyframe request) |
 | — | *(mở rộng)* Dashcam-style recording | ✅ Done | `writer/circular_h264_writer.*` — xoay segment theo thời lượng, tự xóa segment cũ khi vượt hạn mức |
-| 19 | RTCP (RFC 3550 Receiver/Sender Reports) | ⏳ Chưa làm | Chỉ có `control_channel` (giao thức tối giản riêng, **không phải** RTCP chuẩn) |
+| 19 | RTCP (RFC 3550 Receiver/Sender Reports) | ✅ **Done** | `rtp/rtcp_packet.*` (SR/RR wire format thật theo RFC 3550), `rtp/rtcp_sender_thread.*` (sender, SR multiplex chung port RTP data - RFC 5761 rtcp-mux), `rtp/rtcp_receiver_stats.*` + `rtp/rtcp_receiver_thread.*` (receiver, RR multiplex chung control channel) — verified end-to-end qua UDP thật: SR/RR trao đổi đúng, jitter tính đúng công thức RFC 3550 §6.4.1 tăng dần theo thời gian thực (0→703→2714), packet/octet count chính xác |
 | 20 | RTSP Server (session negotiation, SDP, multi-client fan-out) | ⏳ Chưa làm | Đã bàn thiết kế (xem phần dưới), chưa code. Hiện `dest_ip`/`dest_port`/`control_port` vẫn cố định qua CLI |
 | 21 | Adaptive bitrate | ✅ Đã làm sớm hơn dự kiến | Xem dòng "mở rộng" ở trên — hoàn thành trước khi tới lượt trong roadmap gốc |
 | 22 | WebRTC | ⏳ Chưa làm | Có hướng thay thế tạm thời: xem trực tiếp qua trình duyệt bằng cầu nối HLS (`bridge.sh`, dùng ffmpeg, không phải WebRTC thật) |
@@ -46,9 +46,8 @@ multi-client fan-out ở bất kỳ đâu trong source code. Đây rất có th�
    - SDP sinh từ SPS/PPS đã cache
    - `PipelineController` (`ensure_running()`/`release()` bằng `ref_count_`) để lazy-start pipeline khi có client đầu tiên
    - Session state machine `INIT → READY → PLAYING`, timeout dọn session mồ côi
-2. **RTCP thật (Phase 19)** — có thể tái sử dụng gần như nguyên vẹn hạ tầng `control_channel`/`control_listener_thread` đã xây cho Phase 18, chỉ cần đổi sang đúng định dạng RTCP RR/SR theo RFC 3550 thay vì giao thức tối giản hiện tại.
-3. **Audio (ý tưởng mở rộng)** — nhân bản kiến trúc pool/queue/thread hiện có cho luồng audio (ALSA capture → Opus encode → RTP SSRC riêng), cần bàn kỹ về đồng bộ lip-sync trước khi code.
-4. **Security (Phase 23)** — SRTP hoặc ít nhất xác thực đơn giản cho control channel (hiện ai cũng gửi được lệnh force-keyframe/đổi bitrate tới sender nếu biết đúng port).
+2. **Audio (ý tưởng mở rộng)** — nhân bản kiến trúc pool/queue/thread hiện có cho luồng audio (ALSA capture → Opus encode → RTP SSRC riêng), cần bàn kỹ về đồng bộ lip-sync trước khi code.
+3. **Security (Phase 23)** — SRTP hoặc ít nhất xác thực đơn giản cho control channel (hiện ai cũng gửi được lệnh force-keyframe/đổi bitrate tới sender nếu biết đúng port).
 
 ## Giới hạn/nợ kỹ thuật đã biết (chưa chặn chức năng, nhưng đáng lưu ý)
 

@@ -1,12 +1,16 @@
 #include <pthread.h>
 #include <cstdio>
 #include <atomic>
+#include <arpa/inet.h>
 
 #include "udp_receiver_thread.h"
 #include "udp_receiver.h"
 #include "rtp_packet_pool.h"
 #include "rtp_depacketizer.h"
 #include "rtp_jitter_buffer.h"
+#include "rtcp_packet.h"
+#include "rtcp_receiver_stats.h"
+#include "time_utils.h"
 #include "log.h"
 
 /**
@@ -15,11 +19,18 @@
  * ============================================================================
  *
  * Loop, once per UDP datagram:
+ *   0. Phase 19 (RTCP, rtcp-mux): if this datagram looks like an RTCP
+ *      SR (RFC 5761 - same port as RTP data, told apart by the packet
+ *      type byte), hand it to rtcp_receiver_stats and go straight back
+ *      to recvfrom() - it never touches the jitter buffer.
  *   1. Acquire a free rtp_packet_t from rtp_packet_pool.
  *   2. recvfrom() straight into a scratch buffer, then
  *      rtp_depacketize_header() parses the RTP header fields and
  *      copies the raw bytes into the packet.
- *   3. Push into rtp_jitter_buffer for sequence reordering - this
+ *   3. Feed rtcp_receiver_stats with this packet's sequence/timestamp/
+ *      arrival time, for its jitter and extended-sequence-number
+ *      tracking (used later when building an RR).
+ *   4. Push into rtp_jitter_buffer for sequence reordering - this
  *      thread never blocks waiting on ordering itself, that's entirely
  *      rtp_depacketizer_thread's job on the pop side.
  */
@@ -52,6 +63,23 @@ static void *udp_receiver_thread_func(void *arg)
             continue;
         }
 
+        // Phase 19 (RTCP, rtcp-mux): the sender's rtcp_sender_thread
+        // periodically injects SR packets into this same socket/port
+        // (RFC 5761) instead of using a separate port. Recognize and
+        // divert them here so they never reach the jitter buffer -
+        // they use RTP/RTCP's version-2 header shape, not our H.264
+        // payload format, and would otherwise be misparsed as a
+        // corrupt RTP data packet.
+        uint64_t arrival_us = time_utils_now_us();
+
+        if (rtcp_is_sr(scratch, static_cast<size_t>(n)))
+        {
+            const rtcp_sr_t *sr = reinterpret_cast<const rtcp_sr_t *>(scratch);
+            rtcp_receiver_stats_on_sr(ntohl(sr->ntp_sec_be), ntohl(sr->ntp_frac_be), arrival_us);
+            LOG_INFO(TAG, "received RTCP SR");
+            continue;
+        }
+
         rtp_packet_t *packet = rtp_packet_pool_acquire();
         if (!packet)
         {
@@ -65,6 +93,8 @@ static void *udp_receiver_thread_func(void *arg)
             rtp_packet_pool_release(packet);
             continue;
         }
+
+        rtcp_receiver_stats_on_packet(packet->sequence_number, packet->timestamp, arrival_us);
 
         // Ownership of `packet` passes to the jitter buffer here - it
         // either buffers it for rtp_depacketizer_thread to pop later,

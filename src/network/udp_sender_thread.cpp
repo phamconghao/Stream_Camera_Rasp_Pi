@@ -4,6 +4,7 @@
 
 #include "udp_sender_thread.h"
 #include "udp_sender.h"
+#include "rtp_packet.h"
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
 #include "log.h"
@@ -26,6 +27,14 @@ static pthread_t g_udp_thread;
 // Owned exclusively by this module, same convention as encoder_thread
 // and rtp_packetizer_thread: independent start/stop, no shared flag.
 static std::atomic<bool> g_udp_running(false);
+
+// Phase 19 (RTCP): cumulative counts rtcp_sender_thread reads to fill
+// in an SR's packet_count/octet_count fields (RFC 3550 6.4.1 - octet
+// count excludes the RTP header, payload bytes only). Reset only at
+// udp_sender_thread_start(), matching "since this session began"
+// semantics real RTCP expects.
+static std::atomic<uint32_t> g_packets_sent(0);
+static std::atomic<uint32_t> g_octets_sent(0);
 
 static void *udp_sender_thread_func(void *arg)
 {
@@ -51,6 +60,8 @@ static void *udp_sender_thread_func(void *arg)
         else
         {
             LOG_INFO(TAG, "sent seq=%u size=%d", packet->sequence_number, sent);
+            g_packets_sent++;
+            g_octets_sent += static_cast<uint32_t>(packet->size - RTP_HEADER_SIZE);
         }
 
         rtp_packet_pool_release(packet);
@@ -72,6 +83,8 @@ int udp_sender_thread_start(const char *dest_ip, uint16_t dest_port)
         return -1;
     }
 
+    g_packets_sent = 0;
+    g_octets_sent = 0;
     g_udp_running = true;
 
     if (pthread_create(&g_udp_thread, nullptr, udp_sender_thread_func, nullptr) != 0)
@@ -97,4 +110,17 @@ void udp_sender_thread_stop(void)
     pthread_join(g_udp_thread, nullptr);
 
     udp_sender_cleanup();
+}
+
+void udp_sender_thread_get_stats(uint32_t *out_packets_sent, uint32_t *out_octets_sent)
+{
+    if (out_packets_sent)
+    {
+        *out_packets_sent = g_packets_sent;
+    }
+
+    if (out_octets_sent)
+    {
+        *out_octets_sent = g_octets_sent;
+    }
 }

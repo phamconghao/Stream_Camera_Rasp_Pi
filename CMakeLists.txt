@@ -72,6 +72,8 @@ set(SOURCES
     src/rtp/rtp_packetizer_thread.cpp
     src/rtp/rtp_packet_pool.cpp
     src/rtp/rtp_packet_queue.cpp
+    src/rtp/rtcp_packet.cpp
+    src/rtp/rtcp_sender_thread.cpp
 
     src/network/udp_sender.cpp
     src/network/udp_sender_thread.cpp
@@ -112,6 +114,9 @@ set(RECEIVER_SOURCES
     src/rtp/rtp_jitter_buffer.cpp
     src/rtp/rtp_packet_pool.cpp
     src/rtp/loss_reporter_thread.cpp
+    src/rtp/rtcp_packet.cpp
+    src/rtp/rtcp_receiver_stats.cpp
+    src/rtp/rtcp_receiver_thread.cpp
 
     src/network/udp_receiver.cpp
     src/network/udp_receiver_thread.cpp

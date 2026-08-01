@@ -19,6 +19,7 @@
 #include "rtp_packet_queue.h"
 #include "udp_sender_thread.h"
 #include "control_listener_thread.h"
+#include "rtcp_sender_thread.h"
 
 /**
  * ============================================================================
@@ -68,9 +69,16 @@
  *     link can't sustain.
  *
  * NOT YET IMPLEMENTED (see roadmap): RTSP Server (would replace the
- * hardcoded dest_ip/dest_port below with per-client negotiation) and
- * full RTCP (this project only has the minimal control_channel above
- * so far, not RFC 3550 Receiver/Sender Reports).
+ * hardcoded dest_ip/dest_port below with per-client negotiation).
+ *
+ * RTCP (Phase 19): network/rtcp_sender_thread.{h,cpp} periodically
+ * injects a Sender Report (RFC 3550 6.4.1) into the SAME socket
+ * udp_sender_thread uses for RTP data (rtcp-mux, RFC 5761 - no new
+ * port). This is genuine RFC 3550 wire format (interoperable with
+ * tools like Wireshark), separate from and in addition to the ad-hoc
+ * control_channel messages above - the two serve different purposes:
+ * control_channel drives this project's own recovery/bitrate logic,
+ * RTCP SR/RR exist for standards-compliant reporting.
  */
 
 // Dead code: an earlier, simpler alternative to rtp_packetizer_thread
@@ -201,6 +209,11 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (rtcp_sender_thread_start() < 0)
+    {
+        return -1;
+    }
+
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -216,6 +229,7 @@ int main(int argc, char **argv)
     //   4. Stop the UDP sender thread (drains RTP packet queue, then exits)
     //   5. Stop the keyframe listener thread (independent control channel,
     //      order relative to the others above doesn't matter)
+    //   6. Stop the RTCP sender thread (also independent)
     g_running = false;
 
     camera_capture_stop();
@@ -228,6 +242,8 @@ int main(int argc, char **argv)
     udp_sender_thread_stop();
 
     control_listener_thread_stop();
+
+    rtcp_sender_thread_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();

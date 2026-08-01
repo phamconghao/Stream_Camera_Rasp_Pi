@@ -2,6 +2,7 @@
 #define __CONTROL_CHANNEL_H__
 
 #include <cstdint>
+#include <cstddef>
 
 /**
  * PIPELINE STAGE (receiver side, control channel):
@@ -32,5 +33,14 @@ void control_channel_request_keyframe(void);
 // internally - loss_reporter_thread already only calls this on its own
 // fixed interval (see loss_reporter_thread.cpp).
 void control_channel_report_loss(uint32_t loss_permille);
+
+/**
+ * Phase 19 (RTCP): sends raw bytes as-is via this module's already-open
+ * socket - used by rtcp_receiver_thread to send RTCP RR packets over
+ * the same destination as the ad-hoc keyframe-request/loss-report
+ * messages above (multiplexed, no new port). Returns the same as
+ * udp_sender_send(): bytes sent, or -1 on failure.
+ */
+int control_channel_send_raw(const uint8_t *data, size_t size);
 
 #endif // __CONTROL_CHANNEL_H__

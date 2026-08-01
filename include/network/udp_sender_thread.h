@@ -16,4 +16,11 @@
 int udp_sender_thread_start(const char *dest_ip, uint16_t dest_port);
 void udp_sender_thread_stop(void);
 
+/**
+ * Phase 19 (RTCP): cumulative packets/payload-octets successfully sent
+ * since udp_sender_thread_start(). Read by rtcp_sender_thread to fill
+ * in an SR's packet_count/octet_count fields.
+ */
+void udp_sender_thread_get_stats(uint32_t *out_packets_sent, uint32_t *out_octets_sent);
+
 #endif // __UDP_SENDER_THREAD_H__

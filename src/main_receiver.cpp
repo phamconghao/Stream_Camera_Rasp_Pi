@@ -16,6 +16,8 @@
 #include "control_channel.h"
 #include "loss_reporter_thread.h"
 #include "circular_h264_writer.h"
+#include "rtcp_receiver_thread.h"
+#include "rtcp_receiver_stats.h"
 #include <cstring>
 
 /**
@@ -64,7 +66,24 @@
  *   - loss report, sent periodically by loss_reporter_thread.{h,cpp}
  *     (reads rtp_jitter_buffer's cumulative stats), driving the
  *     sender's adaptive bitrate decision.
+ *
+ * RTCP (Phase 19): rtp/rtcp_receiver_thread.{h,cpp} periodically sends
+ * a genuine RFC 3550 Receiver Report back to the sender, multiplexed
+ * onto control_channel's already-open socket (RFC 5761 rtcp-mux - no
+ * new port). rtp/rtcp_receiver_stats.{h,cpp} does the actual bookkeeping
+ * (interarrival jitter, extended sequence numbers, LSR/DLSR), fed by
+ * udp_receiver_thread per packet and by incoming RTCP SR packets (sent
+ * by the sender's rtcp_sender_thread, arriving multiplexed with RTP
+ * data on `listen_port`).
  */
+
+// Phase 19 (RTCP): must match rtp_packetizer_thread's RTP_SSRC constant
+// on the sender side - this identifies WHICH stream the RR is about.
+// g_reporter_ssrc is an arbitrary, distinct identifier for THIS
+// receiver (a real implementation would randomize this per RFC 3550
+// section 8.1; fixed here since there's only ever one receiver).
+static constexpr uint32_t RTCP_VIDEO_SSRC = 0x12345678;
+static constexpr uint32_t RTCP_REPORTER_SSRC = 0x87654321;
 
 int main(int argc, char **argv)
 {
@@ -135,6 +154,8 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    rtcp_receiver_stats_init();
+
     // Start order: consumer threads first (furthest downstream to
     // furthest upstream), THEN the producer (UDP receiver) - so nothing
     // is ever pushed into a queue/buffer before its consumer thread
@@ -165,6 +186,11 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (rtcp_receiver_thread_start(RTCP_REPORTER_SSRC, RTCP_VIDEO_SSRC) < 0)
+    {
+        return -1;
+    }
+
     std::cout << "Listening for RTP on port " << listen_port
               << ", writing decoded frames to " << output_path << std::endl;
     std::cout << "Keyframe requests and loss reports will be sent to "
@@ -188,6 +214,7 @@ int main(int argc, char **argv)
     //   4. Stop the YUV writer thread (drains the raw queue, then exits)
     //   5. Stop the loss reporter thread (independent timer, order
     //      relative to the others above doesn't matter)
+    //   6. Stop the RTCP receiver thread (also independent)
     g_running = false;
 
     udp_receiver_thread_stop();
@@ -199,6 +226,8 @@ int main(int argc, char **argv)
     yuv_writer_stop();
 
     loss_reporter_thread_stop();
+
+    rtcp_receiver_thread_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
