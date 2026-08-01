@@ -96,7 +96,7 @@ int main(int argc, char **argv)
     // and the control_port it was started with (see main.cpp). Same
     // "hardcoded/CLI-provided until RTSP negotiates it" caveat as
     // dest_ip/dest_port on the sender side.
-    const char *sender_ip = (argc > 3) ? argv[3] : "127.0.0.1";
+    const char *sender_ip = (argc > 3) ? argv[3] : "192.168.1.100";
     uint16_t control_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 5005;
 
     // Idea #4 (dashcam-style recording): directory circular_h264_writer
