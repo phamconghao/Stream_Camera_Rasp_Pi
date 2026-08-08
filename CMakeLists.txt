@@ -41,6 +41,7 @@ include_directories(
     include/rtp
     include/common
     include/network
+    include/rtsp
 
     ${LIBCAMERA_INCLUDE_DIRS}
 )
@@ -79,6 +80,10 @@ set(SOURCES
     src/network/udp_sender_thread.cpp
     src/network/udp_receiver.cpp
     src/network/control_listener_thread.cpp
+
+    src/rtsp/rtsp_message.cpp
+    src/rtsp/rtsp_session_registry.cpp
+    src/rtsp/rtsp_server.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

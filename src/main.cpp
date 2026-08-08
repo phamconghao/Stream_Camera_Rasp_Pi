@@ -20,6 +20,7 @@
 #include "udp_sender_thread.h"
 #include "control_listener_thread.h"
 #include "rtcp_sender_thread.h"
+#include "rtsp_server.h"
 
 /**
  * ============================================================================
@@ -121,6 +122,16 @@ int main(int argc, char **argv)
     // control_port argument passed to camera_receiver.
     uint16_t control_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 5005;
 
+    // Phase 20 (RTSP Server) steps 1-2: TCP port the RTSP control
+    // plane listens on. Fully functional at the protocol/session level
+    // (OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN, RtspSessionRegistry with
+    // the 5-session cap and orphan reaping) - NOT YET wired into the
+    // actual data pipeline (see rtsp_server.cpp's TODOs on handle_play/
+    // handle_teardown). Until that wiring lands, the RTP data path
+    // still only goes to the fixed dest_ip/dest_port above, same as
+    // before Phase 20.
+    uint16_t rtsp_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 8554;
+
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
     // independent running flag for start/stop, so they can be controlled
@@ -214,6 +225,11 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (rtsp_server_start(rtsp_port) < 0)
+    {
+        return -1;
+    }
+
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -244,6 +260,8 @@ int main(int argc, char **argv)
     control_listener_thread_stop();
 
     rtcp_sender_thread_stop();
+
+    rtsp_server_stop();
 
     encoded_frame_queue_cleanup();
     encoded_frame_pool_cleanup();
