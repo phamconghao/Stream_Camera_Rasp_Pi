@@ -1,26 +1,12 @@
 #include <iostream>
-#include <pthread.h>
-#include <atomic>
 #include <cstdlib>
 #include <cstdint>
 
 #include "app_state.h"
-#include "camera_capture.h"
-#include "raw_frame_pool.h"
-#include "raw_frame_queue.h"
-#include "encoded_frame_pool.h"
-#include "encoded_frame_queue.h"
-#include "encoder_thread.h"
-#include "bcm2835_encoder.h"
-#include "h264_writer.h"
-#include "rtp_packetizer.h"
-#include "rtp_packetizer_thread.h"
-#include "rtp_packet_pool.h"
-#include "rtp_packet_queue.h"
-#include "udp_sender_thread.h"
 #include "control_listener_thread.h"
 #include "rtcp_sender_thread.h"
 #include "rtsp_server.h"
+#include "pipeline_controller.h"
 
 /**
  * ============================================================================
@@ -49,10 +35,19 @@
  * Every arrow above is "producer pushes pointer, consumer pops pointer" -
  * frame/packet bytes are never copied between pipeline stages (only
  * copied once, when captured from the camera / read out of the
- * hardware encoder). Each thread stage owns its own independent
- * start/stop running flag (see e.g. g_encoder_running in
- * encoder_thread.cpp) - app_state::g_running (below) is a separate,
- * app-wide flag only main() writes to.
+ * hardware encoder).
+ *
+ * PHASE 20 step 3 (lazy pipeline lifecycle): unlike every earlier phase,
+ * main() below no longer starts the data pipeline above unconditionally
+ * at process startup. rtsp/pipeline_controller.{h,cpp} now owns that
+ * entirely - main() just prepares it (hardware init, pool/queue alloc)
+ * via pipeline_controller_init(), then the RTSP server's PLAY/TEARDOWN
+ * handlers (rtsp_server.cpp) call pipeline_controller_ensure_running()/
+ * _release() as clients come and go. The control channel, RTCP, and the
+ * RTSP control plane itself are NOT lazy - they listen continuously
+ * from process startup, independent of whether the data pipeline is
+ * currently running, so a client can always connect/DESCRIBE/SETUP even
+ * before anyone has PLAYed.
  *
  * CONTROL CHANNEL (Phase 18 packet-loss recovery + adaptive bitrate),
  * separate from the RTP data path above: network/control_listener_thread.{h,cpp}
@@ -69,49 +64,25 @@
  *     network conditions instead of continuing to send at a rate the
  *     link can't sustain.
  *
- * NOT YET IMPLEMENTED (see roadmap): RTSP Server (would replace the
- * hardcoded dest_ip/dest_port below with per-client negotiation).
- *
  * RTCP (Phase 19): network/rtcp_sender_thread.{h,cpp} periodically
  * injects a Sender Report (RFC 3550 6.4.1) into the SAME socket
  * udp_sender_thread uses for RTP data (rtcp-mux, RFC 5761 - no new
  * port). This is genuine RFC 3550 wire format (interoperable with
  * tools like Wireshark), separate from and in addition to the ad-hoc
- * control_channel messages above - the two serve different purposes:
- * control_channel drives this project's own recovery/bitrate logic,
- * RTCP SR/RR exist for standards-compliant reporting.
+ * control_channel messages above.
+ *
+ * NOT YET IMPLEMENTED (see roadmap): Phase 20 step 4, fan-out - the RTP
+ * data still only goes to the one fixed dest_ip/dest_port below,
+ * regardless of which client's SETUP negotiated which port. Step 3
+ * (this commit) only controls WHEN the pipeline runs, not WHO the data
+ * goes to.
  */
-
-// Dead code: an earlier, simpler alternative to rtp_packetizer_thread
-// that just logged encoded frames. Not started anywhere in main() below
-// (the pthread_create call for it is commented out further down) - kept
-// only as a reference of the old, no-longer-used minimal consumer.
-static std::atomic<bool> g_consumer_running(true);
-
-void *consumer_thread(void *)
-{
-    while (g_consumer_running)
-    {
-        encoded_frame_t *frame = encoded_frame_queue_pop();
-
-        if (!frame)
-        {
-            continue;
-        }
-
-        std::cout << "[CONSUMER] size = " << frame->size << " seq = " << frame->sequence << std::endl;
-
-        encoded_frame_pool_release(frame);
-    }
-
-    return nullptr;
-}
 
 int main(int argc, char **argv)
 {
-    // Destination for the UDP sender. Hardcoded/CLI-provided for now;
-    // once the RTSP server exists, it will negotiate the real client
-    // address per session (SETUP request) instead of a fixed target.
+    // Fallback destination for the UDP sender, used until Phase 20 step
+    // 4 (fan-out to every RTSP session's negotiated client_ip/client_rtp_port)
+    // lands - see pipeline_controller.h.
     const char *dest_ip = (argc > 1) ? argv[1] : "192.168.1.100";
     uint16_t dest_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 5004;
 
@@ -122,14 +93,7 @@ int main(int argc, char **argv)
     // control_port argument passed to camera_receiver.
     uint16_t control_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 5005;
 
-    // Phase 20 (RTSP Server) steps 1-2: TCP port the RTSP control
-    // plane listens on. Fully functional at the protocol/session level
-    // (OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN, RtspSessionRegistry with
-    // the 5-session cap and orphan reaping) - NOT YET wired into the
-    // actual data pipeline (see rtsp_server.cpp's TODOs on handle_play/
-    // handle_teardown). Until that wiring lands, the RTP data path
-    // still only goes to the fixed dest_ip/dest_port above, same as
-    // before Phase 20.
+    // TCP port the RTSP control plane listens on (Phase 20).
     uint16_t rtsp_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 8554;
 
     // App-level flag: only main() (or a future signal handler installed
@@ -138,83 +102,16 @@ int main(int argc, char **argv)
     // separately later (per RTSP-client sessions, etc.).
     g_running = true;
 
-    // Initialize every pool/queue BEFORE starting any thread that could
-    // touch them - each stage's pool/queue must exist before its
-    // producer or consumer thread can safely run.
-    if (raw_frame_pool_init() < 0)
+    // Hardware init + pool/queue allocation only - does NOT start
+    // streaming yet. The data pipeline itself is started lazily, on
+    // the first RTSP PLAY - see pipeline_controller.h.
+    if (pipeline_controller_init(dest_ip, dest_port) < 0)
     {
         return -1;
     }
 
-    if (raw_frame_queue_init() < 0)
-    {
-        return -1;
-    }
-
-    if (encoded_frame_pool_init() < 0)
-    {
-        return -1;
-    }
-
-    if (encoded_frame_queue_init() < 0)
-    {
-        return -1;
-    }
-
-    if (rtp_packet_pool_init() < 0)
-    {
-        return -1;
-    }
-
-    if (rtp_packet_queue_init() < 0)
-    {
-        return -1;
-    }
-
-    // h264_writer would write the encoded stream straight to a local
-    // .h264 file - an alternative/earlier consumer of encoded_frame_queue
-    // to the current RTP path. Disabled since the pipeline now streams
-    // over RTP/UDP instead of (or as well as) writing to disk.
-    // if (h264_writer_start() < 0)
-    // {
-    //     return -1;
-    // }
-
-    if (camera_capture_init() < 0)
-    {
-        return -1;
-    }
-
-    if (bcm2835_encoder_init(640, 480) < 0)
-    {
-        return -1;
-    }
-
-    // pthread_t consumer_tid;
-
-    // pthread_create(&consumer_tid, nullptr, consumer_thread, nullptr);
-
-    // Start order: consumer threads first (encoder_thread, then further
-    // downstream rtp_packetizer_thread/udp_sender_thread), THEN start
-    // the camera producing frames - so nothing is ever pushed into a
-    // queue before its consumer thread exists to eventually drain it.
-    if (encoder_thread_start() < 0)
-    {
-        return -1;
-    }
-
-    camera_capture_start();
-
-    if (rtp_packetizer_thread_start() < 0)
-    {
-        return -1;
-    }
-
-    if (udp_sender_thread_start(dest_ip, dest_port) < 0)
-    {
-        return -1;
-    }
-
+    // These three listen continuously from startup, independent of
+    // whether any client has PLAYed yet.
     if (control_listener_thread_start(control_port) < 0)
     {
         return -1;
@@ -230,51 +127,23 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    std::cout << "RTSP server ready at rtsp://<this-pi-ip>:" << rtsp_port << "/stream" << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
 
-    // App-wide shutdown signal first (for any future code that only
-    // polls g_running, e.g. a SIGINT-driven main loop). Each thread is
-    // then stopped explicitly and independently, in producer -> consumer
-    // order so each stage can drain and exit cleanly instead of
-    // deadlocking on a queue that will never receive another item:
-    //   1. Stop the camera (no more raw frames produced)
-    //   2. Stop the encoder thread (drains raw queue, then exits)
-    //   3. Stop the RTP packetizer thread (drains encoded queue, then exits)
-    //   4. Stop the UDP sender thread (drains RTP packet queue, then exits)
-    //   5. Stop the keyframe listener thread (independent control channel,
-    //      order relative to the others above doesn't matter)
-    //   6. Stop the RTCP sender thread (also independent)
     g_running = false;
 
-    camera_capture_stop();
-    // camera_capture_cleanup();
-
-    encoder_thread_stop();
-
-    rtp_packetizer_thread_stop();
-
-    udp_sender_thread_stop();
-
+    // Stop the always-on services first, then let pipeline_controller
+    // force-stop the data pipeline if any RTSP client was still PLAYing
+    // (its cleanup() is defensive about this - see pipeline_controller.cpp).
     control_listener_thread_stop();
 
     rtcp_sender_thread_stop();
 
     rtsp_server_stop();
 
-    encoded_frame_queue_cleanup();
-    encoded_frame_pool_cleanup();
-
-    rtp_packet_queue_cleanup();
-    rtp_packet_pool_cleanup();
-
-    raw_frame_queue_cleanup();
-    raw_frame_pool_cleanup();
-
-    // bcm2835_encoder_encode_file("frame_000.yuv", "output.h264");
-
-    bcm2835_encoder_cleanup();
+    pipeline_controller_cleanup();
 
     return 0;
 }

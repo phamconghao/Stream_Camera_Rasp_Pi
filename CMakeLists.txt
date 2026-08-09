@@ -84,6 +84,7 @@ set(SOURCES
     src/rtsp/rtsp_message.cpp
     src/rtsp/rtsp_session_registry.cpp
     src/rtsp/rtsp_server.cpp
+    src/rtsp/pipeline_controller.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

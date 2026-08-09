@@ -84,6 +84,23 @@ bool rtsp_session_registry_set_state(const std::string &session_id, rtsp_session
     return true;
 }
 
+bool rtsp_session_registry_get_state(const std::string &session_id, rtsp_session_state_t *out_state)
+{
+    pthread_mutex_lock(&g_lock);
+
+    auto it = g_sessions.find(session_id);
+    if (it == g_sessions.end())
+    {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    *out_state = it->second.state;
+
+    pthread_mutex_unlock(&g_lock);
+    return true;
+}
+
 bool rtsp_session_registry_touch(const std::string &session_id)
 {
     pthread_mutex_lock(&g_lock);
@@ -153,41 +170,43 @@ std::vector<rtsp_session_t> rtsp_session_registry_get_playing(void)
     return result;
 }
 
-int rtsp_session_registry_reap_orphans(void)
+std::vector<rtsp_session_t> rtsp_session_registry_reap_orphans(void)
 {
     uint64_t now = time_utils_now_us();
-    std::vector<std::string> to_remove;
+    std::vector<rtsp_session_t> reaped;
 
     pthread_mutex_lock(&g_lock);
 
-    for (const auto &pair : g_sessions)
+    for (auto it = g_sessions.begin(); it != g_sessions.end();)
     {
-        uint64_t age = now - pair.second.last_activity_us;
+        uint64_t age = now - it->second.last_activity_us;
         if (age > RTSP_SESSION_TIMEOUT_US)
         {
-            to_remove.push_back(pair.first);
+            reaped.push_back(it->second);
+            it = g_sessions.erase(it);
         }
-    }
-
-    for (const auto &id : to_remove)
-    {
-        g_sessions.erase(id);
+        else
+        {
+            ++it;
+        }
     }
 
     int remaining = static_cast<int>(g_sessions.size());
 
     pthread_mutex_unlock(&g_lock);
 
-    for (const auto &id : to_remove)
+    for (const auto &session : reaped)
     {
-        LOG_WARN(TAG, "reaped orphaned session %s (no activity for >%llus)",
-                 id.c_str(), static_cast<unsigned long long>(RTSP_SESSION_TIMEOUT_US / 1000000));
+        LOG_WARN(TAG, "reaped orphaned session %s (no activity for >%llus, was %s)",
+                 session.session_id.c_str(),
+                 static_cast<unsigned long long>(RTSP_SESSION_TIMEOUT_US / 1000000),
+                 session.state == rtsp_session_state_t::PLAYING ? "PLAYING" : "not playing");
     }
 
-    if (!to_remove.empty())
+    if (!reaped.empty())
     {
         LOG_INFO(TAG, "%d/%d slots used after reaping", remaining, RTSP_MAX_SESSIONS);
     }
 
-    return static_cast<int>(to_remove.size());
+    return reaped;
 }

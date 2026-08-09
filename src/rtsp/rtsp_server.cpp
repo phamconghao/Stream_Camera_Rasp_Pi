@@ -15,6 +15,7 @@
 
 #include "rtsp_message.h"
 #include "rtsp_session_registry.h"
+#include "pipeline_controller.h"
 #include "log.h"
 
 static const char *TAG = "RTSP_SRV";
@@ -137,11 +138,25 @@ static rtsp_response_t handle_play(const rtsp_request_t &req)
         return resp;
     }
 
+    // Only bump the pipeline's ref count on a genuine READY->PLAYING
+    // transition - a client re-sending PLAY on an already-playing
+    // session (some clients do this to resume after a pause) must not
+    // inflate the ref count beyond the number of real viewers. See
+    // pipeline_controller.h's header comment for why this matters.
+    rtsp_session_state_t prev_state = rtsp_session_state_t::INIT;
+    rtsp_session_registry_get_state(session_id, &prev_state);
+
     rtsp_session_registry_set_state(session_id, rtsp_session_state_t::PLAYING);
 
-    // TODO (future step): PipelineController::ensure_running() belongs here.
-    LOG_INFO(TAG, "session %s -> PLAYING (pipeline start not yet wired up - see roadmap.md)",
-             session_id.c_str());
+    if (prev_state != rtsp_session_state_t::PLAYING)
+    {
+        pipeline_controller_ensure_running();
+        LOG_INFO(TAG, "session %s -> PLAYING (pipeline_controller_ensure_running)", session_id.c_str());
+    }
+    else
+    {
+        LOG_INFO(TAG, "session %s already PLAYING - PLAY is a no-op", session_id.c_str());
+    }
 
     resp.status_code = 200;
     resp.status_text = "OK";
@@ -161,11 +176,25 @@ static rtsp_response_t handle_teardown(const rtsp_request_t &req)
         return resp;
     }
 
+    // Only release the pipeline's ref count if this session was
+    // actually PLAYING - a client that SETUPs then immediately
+    // TEARDOWNs without ever PLAYing never incremented the ref count
+    // in the first place, so releasing here would underflow it toward
+    // stopping the pipeline for someone else who legitimately is watching.
+    rtsp_session_state_t prev_state = rtsp_session_state_t::INIT;
+    rtsp_session_registry_get_state(session_id, &prev_state);
+
     rtsp_session_registry_remove(session_id);
 
-    // TODO (future step): PipelineController::release() belongs here.
-    LOG_INFO(TAG, "session %s removed (pipeline stop not yet wired up - see roadmap.md)",
-             session_id.c_str());
+    if (prev_state == rtsp_session_state_t::PLAYING)
+    {
+        pipeline_controller_release();
+        LOG_INFO(TAG, "session %s removed (pipeline_controller_release)", session_id.c_str());
+    }
+    else
+    {
+        LOG_INFO(TAG, "session %s removed (was never PLAYING - no pipeline release needed)", session_id.c_str());
+    }
 
     resp.status_code = 200;
     resp.status_text = "OK";
@@ -334,7 +363,22 @@ static void *reaper_thread_func(void *arg)
         }
 
         waited_sec = 0;
-        rtsp_session_registry_reap_orphans();
+
+        std::vector<rtsp_session_t> reaped = rtsp_session_registry_reap_orphans();
+        for (const auto &session : reaped)
+        {
+            if (session.state == rtsp_session_state_t::PLAYING)
+            {
+                // This session was actively streaming when it went
+                // silent (crashed client, network drop with no
+                // TEARDOWN ever received) - without this, the pipeline
+                // would keep running forever for a viewer who's gone,
+                // since nothing else would ever call release() for it.
+                pipeline_controller_release();
+                LOG_WARN(TAG, "released pipeline ref for reaped PLAYING session %s",
+                         session.session_id.c_str());
+            }
+        }
     }
 
     LOG_INFO(TAG, "reaper thread exit");

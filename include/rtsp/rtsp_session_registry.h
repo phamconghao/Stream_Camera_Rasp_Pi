@@ -46,6 +46,7 @@ std::string rtsp_session_registry_create(const std::string &client_ip,
                                           uint16_t client_rtcp_port);
 
 bool rtsp_session_registry_set_state(const std::string &session_id, rtsp_session_state_t state);
+bool rtsp_session_registry_get_state(const std::string &session_id, rtsp_session_state_t *out_state);
 bool rtsp_session_registry_touch(const std::string &session_id);
 bool rtsp_session_registry_remove(const std::string &session_id);
 bool rtsp_session_registry_exists(const std::string &session_id);
@@ -54,6 +55,14 @@ int rtsp_session_registry_count(void);
 
 std::vector<rtsp_session_t> rtsp_session_registry_get_playing(void);
 
-int rtsp_session_registry_reap_orphans(void);
+/**
+ * Removes every session whose last_activity is older than
+ * RTSP_SESSION_TIMEOUT_US. Returns the removed sessions themselves (not
+ * just a count) so the caller (rtsp_server.cpp's reaper thread) can
+ * call pipeline_controller_release() for any that were PLAYING - a
+ * client that crashes mid-stream without sending TEARDOWN would
+ * otherwise leave the pipeline running forever with a phantom viewer.
+ */
+std::vector<rtsp_session_t> rtsp_session_registry_reap_orphans(void);
 
 #endif // __RTSP_SESSION_REGISTRY_H__
