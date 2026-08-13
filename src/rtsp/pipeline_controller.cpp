@@ -20,13 +20,9 @@ static const char *TAG = "PIPELINE_CTRL";
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_ref_count = 0;
-static std::string g_dest_ip;
-static uint16_t g_dest_port = 0;
 
-int pipeline_controller_init(const char *dest_ip, uint16_t dest_port)
+int pipeline_controller_init(void)
 {
-    g_dest_ip = dest_ip;
-    g_dest_port = dest_port;
     g_ref_count = 0;
 
     // Pools/queues + hardware device init happen once, up front - NOT
@@ -41,7 +37,7 @@ int pipeline_controller_init(const char *dest_ip, uint16_t dest_port)
     if (camera_capture_init() < 0) return -1;
     if (bcm2835_encoder_init(640, 480) < 0) return -1;
 
-    LOG_INFO(TAG, "initialized (fallback dest %s:%u until fan-out lands)", dest_ip, dest_port);
+    LOG_INFO(TAG, "initialized (RTP destinations added per-session by rtsp_server.cpp)");
 
     return 0;
 }
@@ -65,7 +61,7 @@ void pipeline_controller_ensure_running(void)
         encoder_thread_start();
         camera_capture_start();
         rtp_packetizer_thread_start();
-        udp_sender_thread_start(g_dest_ip.c_str(), g_dest_port);
+        udp_sender_thread_start();
     }
     else
     {

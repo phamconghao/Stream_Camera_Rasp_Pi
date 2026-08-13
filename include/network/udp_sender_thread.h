@@ -6,14 +6,18 @@
 /**
  * PIPELINE STAGE (thread wrapper, final stage): RTP Packet Queue -> [THIS] -> Network
  *
- * Consumes rtp_packet_queue and sends each packet over UDP to
- * dest_ip:dest_port. Returns 0 on success, -1 on failure (e.g. bad IP).
+ * Consumes rtp_packet_queue and fans each packet out over UDP to every
+ * destination currently registered with udp_sender (see udp_sender.h) -
+ * one per PLAYING RTSP session. Returns 0 on success, -1 on failure
+ * (e.g. socket() failed).
  *
- * dest_ip/dest_port are hardcoded/passed-in for now. Once the RTSP
- * server exists, it will negotiate the real client address per session
- * (via SETUP) instead of a fixed destination.
+ * PHASE 20 step 4: no longer takes a fixed dest_ip/dest_port - the
+ * RTSP server negotiates each real client address per session (via
+ * SETUP) and registers/deregisters it with udp_sender_add_dest()/
+ * udp_sender_remove_dest() as sessions PLAY/TEARDOWN (see
+ * rtsp_server.cpp's handle_play/handle_teardown).
  */
-int udp_sender_thread_start(const char *dest_ip, uint16_t dest_port);
+int udp_sender_thread_start(void);
 void udp_sender_thread_stop(void);
 
 /**

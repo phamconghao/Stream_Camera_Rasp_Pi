@@ -19,10 +19,24 @@ static uint64_t g_last_keyframe_request_us = 0;
 // link further and defeat the purpose.
 static constexpr uint64_t KEYFRAME_REQUEST_MIN_INTERVAL_US = 500 * 1000;
 
+// Phase 20 step 4: udp_sender.cpp is now shared plumbing that fans out
+// to a set of keyed destinations (see udp_sender.h) rather than a
+// single fixed one - the RTSP sender side (rtsp_server.cpp) needs that
+// for multi-client RTP fan-out. This control channel is still strictly
+// point-to-point (receiver -> the one sender it's paired with), so it
+// just registers its single destination under a fixed key.
+static const char *CONTROL_DEST_KEY = "control_channel";
+
 int control_channel_init(const char *sender_ip, uint16_t control_port)
 {
-    if (udp_sender_init(sender_ip, control_port) < 0)
+    if (udp_sender_init() < 0)
     {
+        return -1;
+    }
+
+    if (udp_sender_add_dest(CONTROL_DEST_KEY, sender_ip, control_port) < 0)
+    {
+        udp_sender_cleanup();
         return -1;
     }
 

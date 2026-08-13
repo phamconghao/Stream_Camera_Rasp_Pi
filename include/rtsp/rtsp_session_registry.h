@@ -47,6 +47,12 @@ std::string rtsp_session_registry_create(const std::string &client_ip,
 
 bool rtsp_session_registry_set_state(const std::string &session_id, rtsp_session_state_t state);
 bool rtsp_session_registry_get_state(const std::string &session_id, rtsp_session_state_t *out_state);
+
+// Phase 20 step 4 (RTP fan-out): full session lookup, used by
+// rtsp_server.cpp's handle_play() to fetch the client_ip/client_rtp_port
+// a PLAYING session's RTP destination should be added to udp_sender under.
+bool rtsp_session_registry_get(const std::string &session_id, rtsp_session_t *out_session);
+
 bool rtsp_session_registry_touch(const std::string &session_id);
 bool rtsp_session_registry_remove(const std::string &session_id);
 bool rtsp_session_registry_exists(const std::string &session_id);

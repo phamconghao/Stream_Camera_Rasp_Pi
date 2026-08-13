@@ -101,6 +101,23 @@ bool rtsp_session_registry_get_state(const std::string &session_id, rtsp_session
     return true;
 }
 
+bool rtsp_session_registry_get(const std::string &session_id, rtsp_session_t *out_session)
+{
+    pthread_mutex_lock(&g_lock);
+
+    auto it = g_sessions.find(session_id);
+    if (it == g_sessions.end())
+    {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    *out_session = it->second;
+
+    pthread_mutex_unlock(&g_lock);
+    return true;
+}
+
 bool rtsp_session_registry_touch(const std::string &session_id)
 {
     pthread_mutex_lock(&g_lock);

@@ -52,14 +52,22 @@ static void *udp_sender_thread_func(void *arg)
             continue;
         }
 
-        int sent = udp_sender_send(packet->data, packet->size);
-        if (sent < 0)
+        // udp_sender_send() fans this one packet out to every
+        // currently-PLAYING session's destination and returns how many
+        // of those sendto() calls succeeded. 0 is not an error here -
+        // it just means the pipeline is momentarily running with no
+        // registered destination yet (e.g. between pipeline_controller
+        // starting it and handle_play() calling udp_sender_add_dest() -
+        // see rtsp_server.cpp) - so packets/octets counters, which feed
+        // RTCP SR fields, only advance on an actual delivery.
+        int dests_ok = udp_sender_send(packet->data, packet->size);
+        if (dests_ok < 0)
         {
             LOG_WARN(TAG, "failed to send packet seq=%u", packet->sequence_number);
         }
-        else
+        else if (dests_ok > 0)
         {
-            LOG_INFO(TAG, "sent seq=%u size=%d", packet->sequence_number, sent);
+            LOG_INFO(TAG, "sent seq=%u size=%d to %d dest(s)", packet->sequence_number, packet->size, dests_ok);
             g_packets_sent++;
             g_octets_sent += static_cast<uint32_t>(packet->size - RTP_HEADER_SIZE);
         }
@@ -72,13 +80,14 @@ static void *udp_sender_thread_func(void *arg)
     return nullptr;
 }
 
-// Opens the UDP socket to dest_ip:dest_port (see udp_sender_init) and
-// THEN spawns the thread - if the socket fails to open (e.g. malformed
-// IP), this returns -1 without starting a thread that would have
-// nothing to send with.
-int udp_sender_thread_start(const char *dest_ip, uint16_t dest_port)
+// Opens the (destination-less, for now) UDP socket (see udp_sender_init)
+// and THEN spawns the thread - if the socket fails to open, this
+// returns -1 without starting a thread that would have nothing to send
+// with. Destinations are added afterwards, per RTSP session, via
+// udp_sender_add_dest() (called from rtsp_server.cpp's handle_play()).
+int udp_sender_thread_start(void)
 {
-    if (udp_sender_init(dest_ip, dest_port) < 0)
+    if (udp_sender_init() < 0)
     {
         return -1;
     }

@@ -71,30 +71,23 @@
  * tools like Wireshark), separate from and in addition to the ad-hoc
  * control_channel messages above.
  *
- * NOT YET IMPLEMENTED (see roadmap): Phase 20 step 4, fan-out - the RTP
- * data still only goes to the one fixed dest_ip/dest_port below,
- * regardless of which client's SETUP negotiated which port. Step 3
- * (this commit) only controls WHEN the pipeline runs, not WHO the data
- * goes to.
+ * PHASE 20 step 4 (this commit): RTP fan-out - udp_sender now sends
+ * every packet to the destination of EACH currently-PLAYING RTSP
+ * session (rtsp_server.cpp's handle_play()/handle_teardown() register/
+ * deregister them by session_id), instead of the single fixed
+ * dest_ip/dest_port CLI argument earlier phases used for point-to-point
+ * testing - that argument is gone below. See udp_sender.h and
+ * pipeline_controller.h for the full picture.
  */
 
 int main(int argc, char **argv)
 {
-    // Fallback destination for the UDP sender, used until Phase 20 step
-    // 4 (fan-out to every RTSP session's negotiated client_ip/client_rtp_port)
-    // lands - see pipeline_controller.h.
-    const char *dest_ip = (argc > 1) ? argv[1] : "192.168.1.100";
-    uint16_t dest_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 5004;
-
     // Control channel port this sender listens on for keyframe-request
     // datagrams from the receiver (see control_listener_thread.h).
-    // Independent of dest_port (which is where WE send RTP data TO) -
-    // this is where WE receive control messages FROM. Must match the
-    // control_port argument passed to camera_receiver.
-    uint16_t control_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 5005;
+    uint16_t control_port = (argc > 1) ? static_cast<uint16_t>(std::atoi(argv[1])) : 5005;
 
     // TCP port the RTSP control plane listens on (Phase 20).
-    uint16_t rtsp_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 8554;
+    uint16_t rtsp_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 8554;
 
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
@@ -104,8 +97,10 @@ int main(int argc, char **argv)
 
     // Hardware init + pool/queue allocation only - does NOT start
     // streaming yet. The data pipeline itself is started lazily, on
-    // the first RTSP PLAY - see pipeline_controller.h.
-    if (pipeline_controller_init(dest_ip, dest_port) < 0)
+    // the first RTSP PLAY - see pipeline_controller.h. RTP destinations
+    // are no longer fixed here either (see udp_sender.h) - each PLAYING
+    // RTSP session registers its own.
+    if (pipeline_controller_init() < 0)
     {
         return -1;
     }

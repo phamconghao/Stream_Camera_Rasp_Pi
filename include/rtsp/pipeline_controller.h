@@ -35,15 +35,16 @@
  * still watching. See rtsp_server.cpp's handle_play/handle_teardown/
  * reaper_thread_func for how this is enforced.
  *
- * NOT YET DONE (future step): the RTP data still only goes to the one
- * fixed dest_ip/dest_port passed to pipeline_controller_init() - actual
- * fan-out to every PLAYING session's negotiated client_ip/client_rtp_port
- * (rtsp_session_registry_get_playing()) is a separate piece of work in
- * udp_sender_thread. This step only controls WHEN the pipeline runs,
- * not WHO the data goes to.
+ * PHASE 20 step 4: RTP fan-out to every PLAYING session now lands in
+ * udp_sender (see udp_sender.h) - this module no longer owns a fixed
+ * dest_ip/dest_port at all. rtsp_server.cpp's handle_play()/
+ * handle_teardown() call udp_sender_add_dest()/udp_sender_remove_dest()
+ * directly, independent of the ensure_running()/release() calls below.
+ * This module still only controls WHEN the pipeline runs; WHO the data
+ * goes to is entirely rtsp_server.cpp + udp_sender's concern now.
  */
 
-int pipeline_controller_init(const char *dest_ip, uint16_t dest_port);
+int pipeline_controller_init(void);
 void pipeline_controller_cleanup(void);
 
 void pipeline_controller_ensure_running(void);

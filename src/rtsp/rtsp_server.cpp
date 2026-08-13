@@ -16,6 +16,7 @@
 #include "rtsp_message.h"
 #include "rtsp_session_registry.h"
 #include "pipeline_controller.h"
+#include "udp_sender.h"
 #include "log.h"
 
 static const char *TAG = "RTSP_SRV";
@@ -138,11 +139,13 @@ static rtsp_response_t handle_play(const rtsp_request_t &req)
         return resp;
     }
 
-    // Only bump the pipeline's ref count on a genuine READY->PLAYING
-    // transition - a client re-sending PLAY on an already-playing
-    // session (some clients do this to resume after a pause) must not
-    // inflate the ref count beyond the number of real viewers. See
-    // pipeline_controller.h's header comment for why this matters.
+    // Only bump the pipeline's ref count (and add this session's RTP
+    // destination) on a genuine READY->PLAYING transition - a client
+    // re-sending PLAY on an already-playing session (some clients do
+    // this to resume after a pause) must not inflate the ref count
+    // beyond the number of real viewers, nor redundantly re-add a
+    // destination that's already registered. See pipeline_controller.h's
+    // header comment for why this matters.
     rtsp_session_state_t prev_state = rtsp_session_state_t::INIT;
     rtsp_session_registry_get_state(session_id, &prev_state);
 
@@ -150,8 +153,21 @@ static rtsp_response_t handle_play(const rtsp_request_t &req)
 
     if (prev_state != rtsp_session_state_t::PLAYING)
     {
+        // Order matters: ensure_running() must come first. On the
+        // very first viewer it's what opens udp_sender's socket (via
+        // udp_sender_thread_start() -> udp_sender_init()), which
+        // clears any stale destination map from a previous run -
+        // adding this session's destination before that would just
+        // have it wiped out immediately after.
         pipeline_controller_ensure_running();
-        LOG_INFO(TAG, "session %s -> PLAYING (pipeline_controller_ensure_running)", session_id.c_str());
+
+        rtsp_session_t session;
+        if (rtsp_session_registry_get(session_id, &session))
+        {
+            udp_sender_add_dest(session_id, session.client_ip.c_str(), session.client_rtp_port);
+        }
+
+        LOG_INFO(TAG, "session %s -> PLAYING (pipeline running, RTP dest registered)", session_id.c_str());
     }
     else
     {
@@ -176,11 +192,13 @@ static rtsp_response_t handle_teardown(const rtsp_request_t &req)
         return resp;
     }
 
-    // Only release the pipeline's ref count if this session was
-    // actually PLAYING - a client that SETUPs then immediately
-    // TEARDOWNs without ever PLAYing never incremented the ref count
-    // in the first place, so releasing here would underflow it toward
-    // stopping the pipeline for someone else who legitimately is watching.
+    // Only release the pipeline's ref count (and drop this session's
+    // RTP destination) if it was actually PLAYING - a client that
+    // SETUPs then immediately TEARDOWNs without ever PLAYing never
+    // incremented the ref count or registered a destination in the
+    // first place, so doing either here would be wrong (underflowing
+    // the ref count toward stopping the pipeline for someone else who
+    // legitimately is watching, in the ref-count case).
     rtsp_session_state_t prev_state = rtsp_session_state_t::INIT;
     rtsp_session_registry_get_state(session_id, &prev_state);
 
@@ -188,12 +206,13 @@ static rtsp_response_t handle_teardown(const rtsp_request_t &req)
 
     if (prev_state == rtsp_session_state_t::PLAYING)
     {
+        udp_sender_remove_dest(session_id);
         pipeline_controller_release();
-        LOG_INFO(TAG, "session %s removed (pipeline_controller_release)", session_id.c_str());
+        LOG_INFO(TAG, "session %s removed (RTP dest dropped, pipeline_controller_release)", session_id.c_str());
     }
     else
     {
-        LOG_INFO(TAG, "session %s removed (was never PLAYING - no pipeline release needed)", session_id.c_str());
+        LOG_INFO(TAG, "session %s removed (was never PLAYING - no dest/pipeline release needed)", session_id.c_str());
     }
 
     resp.status_code = 200;
@@ -371,11 +390,15 @@ static void *reaper_thread_func(void *arg)
             {
                 // This session was actively streaming when it went
                 // silent (crashed client, network drop with no
-                // TEARDOWN ever received) - without this, the pipeline
-                // would keep running forever for a viewer who's gone,
-                // since nothing else would ever call release() for it.
+                // TEARDOWN ever received) - without this, udp_sender
+                // would keep fanning packets out to a dead client's
+                // address forever, and the pipeline would keep running
+                // forever for a viewer who's gone, since nothing else
+                // would ever call udp_sender_remove_dest()/release()
+                // for it.
+                udp_sender_remove_dest(session.session_id);
                 pipeline_controller_release();
-                LOG_WARN(TAG, "released pipeline ref for reaped PLAYING session %s",
+                LOG_WARN(TAG, "dropped RTP dest + released pipeline ref for reaped PLAYING session %s",
                          session.session_id.c_str());
             }
         }
