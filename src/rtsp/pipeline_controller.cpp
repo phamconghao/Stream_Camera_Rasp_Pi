@@ -14,6 +14,7 @@
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
 #include "udp_sender_thread.h"
+#include "sps_pps_cache.h"
 #include "log.h"
 
 static const char *TAG = "PIPELINE_CTRL";
@@ -36,6 +37,15 @@ int pipeline_controller_init(void)
     if (rtp_packet_queue_init() < 0) return -1;
     if (camera_capture_init() < 0) return -1;
     if (bcm2835_encoder_init(640, 480) < 0) return -1;
+
+    // Phase 20 step 5 (part 1): cache lives for the whole process
+    // lifetime, NOT toggled per PLAY/TEARDOWN like the thread
+    // start/stop below - a DESCRIBE that arrives after the pipeline
+    // has been stopped (last viewer left) should still be able to
+    // answer from whatever SPS/PPS an earlier PLAYING session already
+    // produced, rather than losing them every time the ref count hits
+    // zero.
+    sps_pps_cache_init();
 
     LOG_INFO(TAG, "initialized (RTP destinations added per-session by rtsp_server.cpp)");
 
@@ -132,4 +142,5 @@ void pipeline_controller_cleanup(void)
     raw_frame_queue_cleanup();
     raw_frame_pool_cleanup();
     bcm2835_encoder_cleanup();
+    sps_pps_cache_cleanup();
 }

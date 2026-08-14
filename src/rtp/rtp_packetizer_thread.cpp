@@ -9,6 +9,7 @@
 #include "rtp_packetizer.h"
 #include "rtp_packetizer_thread.h"
 #include "h264_nal_parser.h"
+#include "sps_pps_cache.h"
 #include "log.h"
 
 /**
@@ -50,6 +51,12 @@ static constexpr uint32_t FRAME_RATE = 30;     // assumed capture frame rate; no
 static constexpr uint32_t RTP_TIMESTAMP_STEP = RTP_CLOCK / FRAME_RATE; // = 3000 ticks per frame at 30fps/90kHz
 static constexpr uint32_t RTP_SSRC = 0x12345678; // arbitrary fixed stream identifier; fine for one sender, one receiver
 static constexpr uint8_t RTP_PAYLOAD_TYPE_H264 = 96; // dynamic payload type (96-127 range per RFC 3551), negotiated via SDP in a real RTSP session
+
+// Same NAL type values h264_nal_type_string() (h264_nal_parser.cpp)
+// already recognizes for logging - named here too since this is the
+// one place that actually branches on them.
+static constexpr uint8_t H264_NAL_TYPE_SPS = 7;
+static constexpr uint8_t H264_NAL_TYPE_PPS = 8;
 
 // Owned exclusively by this module — independent from app_state::g_running
 // and from encoder_thread's flag, so the RTP sender can later be
@@ -187,6 +194,21 @@ static void *rtp_packetizer_thread_func(void *arg)
                      h264_nal_type_string(nal.nal_type),
                      nal.size,
                      nal.is_last_nal ? 1 : 0);
+
+            // Phase 20 step 5 (part 1): mirror SPS/PPS into
+            // sps_pps_cache as they fly past, so handle_describe()
+            // (rtsp_server.cpp) can build a real SDP
+            // sprop-parameter-sets attribute later without needing to
+            // touch the encoder itself. Purely a side-channel copy -
+            // does not change how this NAL gets RTP-packetized below.
+            if (nal.nal_type == H264_NAL_TYPE_SPS)
+            {
+                sps_pps_cache_set_sps(nal.data, nal.size);
+            }
+            else if (nal.nal_type == H264_NAL_TYPE_PPS)
+            {
+                sps_pps_cache_set_pps(nal.data, nal.size);
+            }
 
             if (rtp_nal_needs_fragmentation(&nal))
             {

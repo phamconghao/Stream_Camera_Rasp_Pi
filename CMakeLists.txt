@@ -68,6 +68,7 @@ set(SOURCES
     src/writer/h264_writer.cpp
 
     src/parser/h264_nal_parser.cpp
+    src/parser/sps_pps_cache.cpp
 
     src/rtp/rtp_packetizer.cpp
     src/rtp/rtp_packetizer_thread.cpp
@@ -88,6 +89,7 @@ set(SOURCES
 
     src/common/app_state.cpp
     src/common/log.cpp
+    src/common/base64.cpp
 )
 
 #

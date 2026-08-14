@@ -17,6 +17,8 @@
 #include "rtsp_session_registry.h"
 #include "pipeline_controller.h"
 #include "udp_sender.h"
+#include "sps_pps_cache.h"
+#include "base64.h"
 #include "log.h"
 
 static const char *TAG = "RTSP_SRV";
@@ -29,6 +31,44 @@ static std::atomic<bool> g_running(false);
 static constexpr int REAPER_INTERVAL_SEC = 10;
 static constexpr uint16_t PLACEHOLDER_SERVER_RTP_PORT = 5004;
 static constexpr uint16_t PLACEHOLDER_SERVER_RTCP_PORT = 5005;
+
+// Phase 20 step 5 (part 3/4): how long handle_describe() waits for a
+// freshly-primed pipeline (see below) to produce its first SPS/PPS
+// before giving up. 1s is generous for one encoded frame at any
+// reasonable framerate/resolution this project targets - see
+// pipeline_controller.h for the ensure_running()/release() pair this
+// priming reuses.
+static constexpr int DESCRIBE_PRIME_MAX_WAIT_ITERATIONS = 20;
+static constexpr int DESCRIBE_PRIME_WAIT_STEP_MS = 50;
+
+// The 3 bytes right after the SPS's 1-byte NAL header are
+// profile_idc, constraint flags, and level_idc - exactly what RFC
+// 6184 section 8.1's profile-level-id fmtp parameter wants, as 6 hex
+// digits. sps here is the NAL as h264_nal_parser/sps_pps_cache hand
+// it around: NAL header byte included, Annex-B start code stripped.
+static std::string sps_profile_level_id_hex(const std::vector<uint8_t> &sps)
+{
+    static const char *HEX = "0123456789ABCDEF";
+
+    // Defensive: an SPS with fewer than 4 bytes total is malformed and
+    // should be unreachable (the encoder never emits one), but a
+    // 6-hex-char placeholder keeps the SDP well-formed rather than
+    // reading out of bounds if it somehow happened.
+    if (sps.size() < 4)
+    {
+        return "000000";
+    }
+
+    std::string hex;
+    hex.reserve(6);
+    for (int i = 1; i <= 3; i++)
+    {
+        hex += HEX[(sps[i] >> 4) & 0x0F];
+        hex += HEX[sps[i] & 0x0F];
+    }
+
+    return hex;
+}
 
 struct connection_ctx_t
 {
@@ -71,12 +111,60 @@ static rtsp_response_t handle_describe(const rtsp_request_t &req)
 {
     (void)req;
     rtsp_response_t resp;
+
+    // Phase 20 step 5 (part 3/4): SPS/PPS aren't known until the
+    // hardware encoder has actually produced at least one access unit
+    // (see sps_pps_cache.h) - but DESCRIBE is normally the very FIRST
+    // request of an RTSP session, sent before any SETUP/PLAY, so on a
+    // freshly-started server nobody has primed the cache yet. Borrow a
+    // pipeline "viewer slot" via the same ref-counted
+    // ensure_running()/release() pair handle_play()/handle_teardown()
+    // use, just long enough for one frame to come through. If a real
+    // viewer is concurrently PLAYing (or starts PLAYing while this
+    // DESCRIBE is waiting), their own ref-count entry keeps the
+    // pipeline running regardless of what this call does - priming
+    // never stops a pipeline someone else still needs, and releasing
+    // here never stops it out from under them either.
+    bool primed_pipeline = false;
+    if (!sps_pps_cache_has_both())
+    {
+        pipeline_controller_ensure_running();
+        primed_pipeline = true;
+
+        for (int i = 0; i < DESCRIBE_PRIME_MAX_WAIT_ITERATIONS && !sps_pps_cache_has_both(); i++)
+        {
+            usleep(DESCRIBE_PRIME_WAIT_STEP_MS * 1000);
+        }
+    }
+
+    if (!sps_pps_cache_has_both())
+    {
+        if (primed_pipeline)
+        {
+            pipeline_controller_release();
+        }
+
+        resp.status_code = 503;
+        resp.status_text = "Service Unavailable";
+        LOG_WARN(TAG, "DESCRIBE failed: no SPS/PPS available after priming wait (encoder unhealthy?)");
+        return resp;
+    }
+
+    std::vector<uint8_t> sps = sps_pps_cache_get_sps();
+    std::vector<uint8_t> pps = sps_pps_cache_get_pps();
+
+    if (primed_pipeline)
+    {
+        pipeline_controller_release();
+    }
+
+    std::string profile_level_id = sps_profile_level_id_hex(sps);
+    std::string sprop_parameter_sets = base64_encode(sps) + "," + base64_encode(pps);
+
     resp.status_code = 200;
     resp.status_text = "OK";
     resp.headers["Content-Type"] = "application/sdp";
 
-    // TODO (future step): generate this from the sender's actual
-    // cached SPS/PPS instead of a fixed placeholder.
     std::ostringstream sdp;
     sdp << "v=0\r\n";
     sdp << "o=- 0 0 IN IP4 127.0.0.1\r\n";
@@ -85,6 +173,8 @@ static rtsp_response_t handle_describe(const rtsp_request_t &req)
     sdp << "t=0 0\r\n";
     sdp << "m=video 0 RTP/AVP 96\r\n";
     sdp << "a=rtpmap:96 H264/90000\r\n";
+    sdp << "a=fmtp:96 packetization-mode=1;profile-level-id=" << profile_level_id
+        << ";sprop-parameter-sets=" << sprop_parameter_sets << "\r\n";
     sdp << "a=control:track1\r\n";
 
     resp.body = sdp.str();
