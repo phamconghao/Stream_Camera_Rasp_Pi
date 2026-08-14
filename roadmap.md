@@ -33,9 +33,23 @@ multi-client fan-out ở bất kỳ đâu trong source code. Đây rất có th�
 | 19 | RTCP (RFC 3550 Receiver/Sender Reports) | ✅ **Done** | `rtp/rtcp_packet.*` (SR/RR wire format thật theo RFC 3550), `rtp/rtcp_sender_thread.*` (sender, SR multiplex chung port RTP data - RFC 5761 rtcp-mux), `rtp/rtcp_receiver_stats.*` + `rtp/rtcp_receiver_thread.*` (receiver, RR multiplex chung control channel) — verified end-to-end qua UDP thật: SR/RR trao đổi đúng, jitter tính đúng công thức RFC 3550 §6.4.1 tăng dần theo thời gian thực (0→703→2714), packet/octet count chính xác |
 | 20 | RTSP Server (session negotiation, SDP, multi-client fan-out) | ✅ **Done (6/6 bước)** | **Bước 1-3** (đã verify qua RTSP client thật ở phiên trước: TCP server port 8554 + parser RTSP/1.0 + dispatch 5 method, `RtspSessionRegistry` giới hạn 5 session + orphan reaper 60s, `PipelineController` lazy-start ref-counted). **Bước 4** — RTP fan-out: `network/udp_sender.*` đổi từ 1 đích cố định sang tập đích theo `session_id` (mutex-guarded map), `handle_play()`/`handle_teardown()` (`rtsp/rtsp_server.*`) add/remove đích khi session PLAYING/kết thúc, reaper cũng dọn đích cho session mồ côi. **Bước 5** — SDP thật: `parser/sps_pps_cache.*` (cache SPS/PPS mới nhất từ `rtp_packetizer_thread`) + `common/base64.*` (RFC 4648 encoder tự viết) → `handle_describe()` sinh `a=fmtp:96 profile-level-id=...;sprop-parameter-sets=...` thật thay vì placeholder; xử lý case DESCRIBE đến trước PLAY bằng cách mượn tạm pipeline (poll tối đa 1s, trả `503` nếu vẫn chưa có SPS/PPS). **Bước 6** — dọn code chết: xóa `writer/h264_writer.*` (không ai gọi) + `h264_split_nals()` (chỉ được gọi bởi file vừa xóa) + `rtsp_session_registry_get_playing()` (mồ côi từ sau bước 4) + include thừa. Build sạch `-Wall -Wextra -Wpedantic -Werror` cho cả `camera_app`/`camera_receiver`, patch verify `git apply --check` clean trên clone sạch nhiều lần. ⚠️ **Bước 4-6 mới build-verified, CHƯA test qua RTSP client thật trên hardware** (khác bước 1-3) — cụ thể chưa xác nhận: nhiều client đồng thời cùng nhận đúng RTP, VLC/ffplay decode được từ SDP thật, hành vi reaper dọn đích khi client mất kết nối đột ngột |
 | 21 | Adaptive bitrate | ✅ Đã làm sớm hơn dự kiến | Xem dòng "mở rộng" ở trên — hoàn thành trước khi tới lượt trong roadmap gốc |
-| 22 | WebRTC | ⏳ Chưa làm | Có hướng thay thế tạm thời: xem trực tiếp qua trình duyệt bằng cầu nối HLS (`bridge.sh`, dùng ffmpeg, không phải WebRTC thật) |
+| 22 | WebRTC | ⏳ Chưa làm (breakdown 6 sub-phase đã lên kế hoạch) | Xem breakdown chi tiết 6 sub-phase (22.1-22.6) ở bảng riêng bên dưới — chưa sub-phase nào được code. Hướng thay thế tạm thời hiện tại: xem qua trình duyệt bằng cầu nối HLS (`bridge.sh`, dùng ffmpeg, không phải WebRTC thật). |
 | 23 | Security | ⏳ Chưa làm | Không có mã hóa/xác thực — UDP plaintext, không SRTP |
 | 24 | Performance optimization | ⏳ Chưa làm | Có vài ghi chú giới hạn hiệu năng đã biết (xem phần dưới), chưa có đợt tối ưu riêng |
+
+## Breakdown Phase 22 (WebRTC) theo sub-phase
+
+> WebRTC không tự định nghĩa mã hóa riêng — ghép DTLS (bắt tay 1 lần, thống nhất khóa) + SRTP (mã hóa từng gói RTP bằng khóa đó, theo RFC 5764). Quyết định đã chốt: dùng OpenSSL cho DTLS + `libsrtp2` cho SRTP thay vì tự viết crypto (rủi ro bảo mật quá cao nếu tự làm sai một chi tiết nhỏ) — đây là 2 dependency bên ngoài đầu tiên của project ngoài `libcamera`.
+
+| Sub-phase | Nội dung | Trạng thái | Ghi chú |
+|---|---|---|---|
+| 22.1 | Signaling server (WebSocket, JSON offer/answer/ICE-candidate) | ⏳ Chưa làm | |
+| 22.2 | SDP WebRTC-compatible (ice-ufrag/pwd, fingerprint, rtcp-fb, parse offer từ trình duyệt) | ⏳ Chưa làm | Mở rộng phần SDP đã có từ Phase 20 bước 5 |
+| 22.3 | ICE (STUN client, trao đổi candidate, connectivity check) | ⏳ Chưa làm | Test trong LAN trước, không cần TURN ở bước đầu |
+| 22.4 | DTLS handshake (OpenSSL `DTLS_method`, `tlsext_use_srtp`, export keying material) | ⏳ Chưa làm | Cần sinh self-signed cert cho Pi lúc khởi động |
+| 22.5 | SRTP encrypt/decrypt luồng RTP hiện có (`libsrtp2`, wrap `udp_sender_send()`) | ⏳ Chưa làm | Xử lý NACK/PLI feedback từ trình duyệt, map vào `control_listener_thread` hiện có |
+| 22.6 | Tích hợp end-to-end + multi-client (mỗi client 1 DTLS session/khóa riêng) + dọn dẹp | ⏳ Chưa làm | |
+
 
 ## Việc cần làm tiếp theo (theo thứ tự đề xuất)
 
