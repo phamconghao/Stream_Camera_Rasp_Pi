@@ -59,8 +59,6 @@ bool rtsp_session_registry_exists(const std::string &session_id);
 
 int rtsp_session_registry_count(void);
 
-std::vector<rtsp_session_t> rtsp_session_registry_get_playing(void);
-
 /**
  * Removes every session whose last_activity is older than
  * RTSP_SESSION_TIMEOUT_US. Returns the removed sessions themselves (not

@@ -93,22 +93,3 @@ bool h264_nal_parser_next(h264_nal_parser_t *parser, h264_nal_t *out_nal)
 
     return true;
 }
-
-// Legacy convenience wrapper: collects every NAL from the iterator API
-// above into a std::vector. Kept only for h264_writer.cpp; new code
-// should use h264_nal_parser_init()/_next() directly (see rtp_packetizer_thread.cpp).
-int h264_split_nals(uint8_t *data, size_t size, std::vector<h264_nal_t> &nals)
-{
-    nals.clear();
-
-    h264_nal_parser_t parser;
-    h264_nal_parser_init(&parser, data, size);
-
-    h264_nal_t nal;
-    while (h264_nal_parser_next(&parser, &nal))
-    {
-        nals.push_back(nal);
-    }
-
-    return nals.size();
-}

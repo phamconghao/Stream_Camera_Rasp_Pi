@@ -1,7 +1,6 @@
 #include "pipeline_controller.h"
 
 #include <pthread.h>
-#include <string>
 
 #include "raw_frame_pool.h"
 #include "raw_frame_queue.h"

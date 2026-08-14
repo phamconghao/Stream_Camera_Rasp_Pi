@@ -168,25 +168,6 @@ int rtsp_session_registry_count(void)
     return count;
 }
 
-std::vector<rtsp_session_t> rtsp_session_registry_get_playing(void)
-{
-    std::vector<rtsp_session_t> result;
-
-    pthread_mutex_lock(&g_lock);
-
-    for (const auto &pair : g_sessions)
-    {
-        if (pair.second.state == rtsp_session_state_t::PLAYING)
-        {
-            result.push_back(pair.second);
-        }
-    }
-
-    pthread_mutex_unlock(&g_lock);
-
-    return result;
-}
-
 std::vector<rtsp_session_t> rtsp_session_registry_reap_orphans(void)
 {
     uint64_t now = time_utils_now_us();

@@ -29,6 +29,18 @@ static pthread_t g_reaper_thread;
 static std::atomic<bool> g_running(false);
 
 static constexpr int REAPER_INTERVAL_SEC = 10;
+
+// Advertised in the SETUP response's Transport header's server_port
+// field (RFC 2326 section 12.39) - clients generally only use this
+// for informational display / RTCP-port-guessing, not to actually
+// reach the server (the client already knows our IP from the TCP
+// connection it DESCRIBEd/SETUP'd over). NOT the real source port RTP
+// packets go out from: since Phase 20 step 4, udp_sender.cpp sends
+// every session's RTP through ONE shared UDP socket whose source port
+// is whatever the OS happened to assign it at bind time, not this
+// fixed value - fixing that would mean plumbing the real ephemeral
+// port out of udp_sender.cpp into here, which isn't worth it unless a
+// real client is ever seen relying on server_port being accurate.
 static constexpr uint16_t PLACEHOLDER_SERVER_RTP_PORT = 5004;
 static constexpr uint16_t PLACEHOLDER_SERVER_RTCP_PORT = 5005;
 
