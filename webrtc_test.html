@@ -100,6 +100,8 @@
       <div id="check-send">⬜ Gửi offer qua signaling</div>
       <div id="check-answer">⬜ Nhận answer từ server</div>
       <div id="check-setremote">⬜ setRemoteDescription(answer) chấp nhận (SDP hợp lệ với Chrome)</div>
+      <div id="check-icecandidate">⬜ Nhận + addIceCandidate() candidate từ Pi</div>
+      <div id="check-iceconnect">⬜ ICE connection state = connected/completed (STUN connectivity check thành công)</div>
     </div>
   </div>
 
@@ -119,14 +121,19 @@
   </div>
 
 <script>
-// Phase 22.2.7: real-browser verification that the signaling
-// server's WebSocket transport (Phase 22.1) and SDP answer builder
-// (Phase 22.2.5-22.2.6) actually work against a real RTCPeerConnection,
-// not just the simulated/hand-built test offers used to verify the
-// server standalone. Deliberately stops right after
-// setRemoteDescription() succeeds - actually reaching a connected ICE
-// state requires Phase 22.3 (ICE candidate exchange) and Phase 22.4
-// (DTLS handshake), neither implemented yet.
+// Phase 22.2.7 + 22.3.5: real-browser verification that the signaling
+// server's WebSocket transport (Phase 22.1), SDP answer builder
+// (Phase 22.2.5-22.2.6), and now ICE candidate exchange + STUN
+// connectivity check (Phase 22.3.1-22.3.4) actually work against a
+// real RTCPeerConnection, not just hand-built test messages.
+//
+// Still stops short of a fully "connected" RTCPeerConnection.
+// connectionState - that requires the DTLS handshake to also
+// complete (Phase 22.4, not implemented yet), which sits alongside
+// but is distinct from ICE connectivity. iceConnectionState reaching
+// "connected"/"completed" (what this page checks) reflects ONLY the
+// STUN Binding Request/Response exchange succeeding - exactly what
+// Phase 22.3 implements and no more.
 
 function log(msg) {
   const el = document.getElementById('log');
@@ -155,6 +162,16 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
   let ws;
   let pc;
 
+  // Resolved once iceConnectionState reaches connected/completed, or
+  // rejected on failure/disconnect - awaited near the end, but wired
+  // up early since oniceconnectionstatechange can fire at any time
+  // once ICE gathering/checking starts.
+  let iceConnectedResolve, iceConnectedReject;
+  const iceConnectedPromise = new Promise((resolve, reject) => {
+    iceConnectedResolve = resolve;
+    iceConnectedReject = reject;
+  });
+
   try {
     // --- Step 1: WebSocket handshake (Phase 22.1) ---
     log(`Connecting to ${wsUrl} ...`);
@@ -174,51 +191,102 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
     // --- Step 2: create an SDP offer (recvonly video, since this
     // project only ever sends video - see build_webrtc_sdp_answer()'s
     // a=sendonly in the answer) ---
-    pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN needed yet - Phase 22.3
+    pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN server needed - this project's ICE is host-candidate-only, see roadmap.md
     pc.addTransceiver('video', { direction: 'recvonly' });
+
+    // Phase 22.3.3: forward every local candidate Chrome gathers to
+    // the signaling server as its own ice-candidate message - the
+    // server doesn't consume these yet (ice_agent.h's responder-only
+    // simplification means it derives the checked address from each
+    // incoming STUN request instead), but sending them keeps this
+    // page's signaling behavior correct/complete regardless.
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        log(`Local ICE candidate gathered: ${event.candidate.candidate}`);
+        ws.send(JSON.stringify({
+          type: 'ice-candidate',
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid || '0',
+          sdpMLineIndex: String(event.candidate.sdpMLineIndex ?? 0),
+        }));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      log(`iceConnectionState -> ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        iceConnectedResolve();
+      } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+        iceConnectedReject(new Error(`ICE connection state became "${pc.iceConnectionState}"`));
+      }
+    };
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    // setLocalDescription can take a moment to finish ICE gathering
-    // depending on the browser; the offer's SDP text itself (what we
-    // actually need to send) is already final at this point though -
-    // ICE candidates get exchanged separately in Phase 22.3 regardless.
     document.getElementById('offerSdp').textContent = pc.localDescription.sdp;
     setCheck('check-offer', true);
     log('Created SDP offer via RTCPeerConnection.createOffer()');
 
     // --- Step 3: send it over signaling (Phase 22.1's JSON envelope) ---
-    const offerMsg = JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp });
-    ws.send(offerMsg);
+    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
     setCheck('check-send', true);
     log('Sent offer over WebSocket');
 
-    // --- Step 4: wait for the answer ---
-    const answerMsg = await new Promise((resolve, reject) => {
-      ws.onmessage = (event) => resolve(event.data);
-      setTimeout(() => reject(new Error('No answer received within 10s')), 10000);
-    });
+    // --- Step 4/5: persistent message handler - the server now sends
+    // MULTIPLE messages after an offer (answer, then a separate
+    // ice-candidate message - see main.cpp's handle_offer()), so this
+    // listens continuously rather than resolving a single promise on
+    // the first message like the Phase 22.2.7 version did. ---
+    let gotAnswer = false;
 
-    const parsed = JSON.parse(answerMsg);
+    ws.onmessage = async (event) => {
+      const parsed = JSON.parse(event.data);
 
-    if (parsed.type === 'error') {
-      throw new Error(`Server rejected offer: ${parsed.message}`);
-    }
-    if (parsed.type !== 'answer') {
-      throw new Error(`Expected "answer", got "${parsed.type}"`);
-    }
+      if (parsed.type === 'error') {
+        log('ERROR from server: ' + parsed.message);
+        connStatus.textContent = 'Lỗi từ server: ' + parsed.message;
+        connStatus.className = 'bad';
+        return;
+      }
 
-    document.getElementById('answerSdp').textContent = parsed.sdp;
-    setCheck('check-answer', true);
-    log('Received SDP answer from signaling server');
+      if (parsed.type === 'answer' && !gotAnswer) {
+        gotAnswer = true;
+        document.getElementById('answerSdp').textContent = parsed.sdp;
+        setCheck('check-answer', true);
+        log('Received SDP answer from signaling server');
 
-    // --- Step 5: the real test - does Chrome accept this SDP? ---
-    await pc.setRemoteDescription({ type: 'answer', sdp: parsed.sdp });
-    setCheck('check-setremote', true, 'Chrome parsed the answer SDP without error');
-    log('setRemoteDescription(answer) succeeded - SDP answer is well-formed');
+        await pc.setRemoteDescription({ type: 'answer', sdp: parsed.sdp });
+        setCheck('check-setremote', true, 'Chrome parsed the answer SDP without error');
+        log('setRemoteDescription(answer) succeeded - SDP answer is well-formed');
+        return;
+      }
 
-    connStatus.textContent = 'Hoàn tất kiểm tra signaling/SDP (chưa thử kết nối ICE/DTLS thật)';
+      if (parsed.type === 'ice-candidate') {
+        log(`Received remote ICE candidate from Pi: ${parsed.candidate}`);
+        await pc.addIceCandidate({
+          candidate: parsed.candidate,
+          sdpMid: parsed.sdpMid,
+          sdpMLineIndex: parseInt(parsed.sdpMLineIndex, 10),
+        });
+        setCheck('check-icecandidate', true);
+        log('addIceCandidate() succeeded - Chrome will now start STUN connectivity checks against the Pi');
+        return;
+      }
+    };
+
+    // --- Step 6: wait for ICE to actually connect (Phase 22.3's real
+    // payoff - the STUN Binding Request/Response exchange between
+    // Chrome and ice_agent.cpp actually succeeding over the network) ---
+    connStatus.textContent = 'Đang chờ ICE connectivity check...';
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('ICE connection timed out after 15s')), 15000)
+    );
+    await Promise.race([iceConnectedPromise, timeoutPromise]);
+
+    setCheck('check-iceconnect', true, `iceConnectionState=${pc.iceConnectionState}`);
+    connStatus.textContent = 'ICE kết nối thành công! (DTLS handshake là việc của Phase 22.4, chưa thử ở đây)';
 
   } catch (err) {
     log('ERROR: ' + err.message);
@@ -227,16 +295,12 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
 
     // Mark whichever check was in-flight as failed, based on what we
     // know already succeeded.
-    if (!document.getElementById('check-ws').textContent.includes('✅')) {
-      setCheck('check-ws', false, err.message);
-    } else if (!document.getElementById('check-offer').textContent.includes('✅')) {
-      setCheck('check-offer', false, err.message);
-    } else if (!document.getElementById('check-send').textContent.includes('✅')) {
-      setCheck('check-send', false, err.message);
-    } else if (!document.getElementById('check-answer').textContent.includes('✅')) {
-      setCheck('check-answer', false, err.message);
-    } else {
-      setCheck('check-setremote', false, err.message);
+    const order = ['check-ws', 'check-offer', 'check-send', 'check-answer', 'check-setremote', 'check-icecandidate', 'check-iceconnect'];
+    for (const id of order) {
+      if (!document.getElementById(id).textContent.includes('✅')) {
+        setCheck(id, false, err.message);
+        break;
+      }
     }
   } finally {
     btn.disabled = false;

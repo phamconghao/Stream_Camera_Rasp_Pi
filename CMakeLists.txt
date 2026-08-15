@@ -101,6 +101,9 @@ set(SOURCES
     src/signaling/webrtc_sdp.cpp
     src/signaling/dtls_cert.cpp
     src/signaling/ice_credentials.cpp
+    src/signaling/ice_candidate.cpp
+    src/signaling/stun_message.cpp
+    src/signaling/ice_agent.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

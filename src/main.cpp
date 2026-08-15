@@ -12,6 +12,8 @@
 #include "webrtc_sdp.h"
 #include "dtls_cert.h"
 #include "ice_credentials.h"
+#include "ice_candidate.h"
+#include "ice_agent.h"
 #include "sps_pps_cache.h"
 #include "json_lite.h"
 #include "log.h"
@@ -108,6 +110,11 @@
 static constexpr int OFFER_PRIME_MAX_WAIT_ITERATIONS = 20;
 static constexpr int OFFER_PRIME_WAIT_STEP_MS = 50;
 
+// Phase 22.3.4: fixed UDP port ice_agent listens on for STUN Binding
+// Requests - shared across every concurrent peer connection (sessions
+// are told apart by ice_ufrag, not by port - see ice_agent.h).
+static constexpr uint16_t ICE_AGENT_PORT = 40000;
+
 // Phase 22.2.6: dispatches a parsed "offer" message to the SDP answer
 // builder (webrtc_sdp.h) and sends the "answer" back over the same
 // signaling connection. ICE (22.3) and DTLS (22.4) haven't run yet at
@@ -165,9 +172,45 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
 
     std::string answer_sdp = build_webrtc_sdp_answer(ice.ufrag, ice.pwd, fingerprint, offer.mid, sps, pps);
 
+    // Phase 22.3.4: this session's STUN requests won't validate
+    // against anything until its (ufrag, pwd) is registered with
+    // ice_agent - must happen before the browser could possibly start
+    // sending checks, so it's done here, before the answer (which is
+    // what triggers the browser to start ICE) is even sent.
+    ice_agent_register_session(ice.ufrag, ice.pwd);
+
     LOG_INFO("MAIN", "sending answer to client %s (ice-ufrag=%s)", client_id.c_str(), ice.ufrag.c_str());
 
     signaling_server_send(client_id, json_build_object({{"type", "answer"}, {"sdp", answer_sdp}}));
+
+    // Phase 22.3.3: tell the browser where to send its connectivity
+    // checks. Sent as its own message right after the answer, rather
+    // than embedded inside the answer's SDP, so this project's
+    // signaling protocol matches how trickle ICE actually works in
+    // practice (candidates as a separate, potentially repeated,
+    // message type - see signaling_server.h) even though this project
+    // only ever has exactly one candidate to send.
+    ice_candidate_t local_candidate = get_local_host_candidate(ICE_AGENT_PORT);
+    if (local_candidate.valid)
+    {
+        std::string candidate_line = build_ice_candidate_line(local_candidate);
+        signaling_server_send(client_id, json_build_object({
+            {"type", "ice-candidate"},
+            {"candidate", candidate_line},
+            {"sdpMid", offer.mid},
+            {"sdpMLineIndex", "0"},
+        }));
+        LOG_INFO("MAIN", "sent ICE candidate to client %s: %s", client_id.c_str(), candidate_line.c_str());
+    }
+    else
+    {
+        // Not fatal to the offer/answer exchange itself - but without
+        // a candidate the browser has nowhere to send connectivity
+        // checks, so ICE (and therefore the whole connection) simply
+        // won't progress past this point. Most likely cause: no
+        // non-loopback IPv4 interface found (see ice_candidate.cpp).
+        LOG_WARN("MAIN", "no local host candidate available - browser %s has nowhere to send STUN checks", client_id.c_str());
+    }
 }
 
 // Phase 22.2.6: real dispatch, replacing Phase 22.1's log-only
@@ -194,8 +237,13 @@ static void on_signaling_message(const std::string &client_id, const std::string
     }
     else
     {
-        // ice-candidate (Phase 22.3) and anything else: not acted on
-        // yet, just logged so the transport can still be verified
+        // Browser's own ice-candidate messages: not consumed yet -
+        // this project's ice_agent (Phase 22.3.4) only implements the
+        // RESPONDER side of ICE (see ice_agent.h's header comment), so
+        // it derives the checked address straight from each incoming
+        // STUN request's UDP source address rather than needing to
+        // know the browser's candidates in advance. Logged so the
+        // exchange itself can still be observed/debugged.
         // end-to-end independent of ICE/DTLS not existing yet.
         LOG_INFO("MAIN", "signaling message from client %s: type=%s (not yet handled)", client_id.c_str(), type.c_str());
     }
@@ -261,6 +309,15 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // Phase 22.3.4: must be listening before any offer could possibly
+    // be answered (handle_offer() registers each session's credentials
+    // with this, and sends the browser a candidate pointing at
+    // ICE_AGENT_PORT - both are meaningless if nothing is bound there yet).
+    if (ice_agent_start(ICE_AGENT_PORT) < 0)
+    {
+        return -1;
+    }
+
     std::cout << "RTSP server ready at rtsp://<this-pi-ip>:" << rtsp_port << "/stream" << std::endl;
     std::cout << "WebRTC signaling server ready at ws://<this-pi-ip>:" << signaling_port << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
@@ -279,6 +336,8 @@ int main(int argc, char **argv)
     rtsp_server_stop();
 
     signaling_server_stop();
+
+    ice_agent_stop();
 
     dtls_cert_cleanup();
 
