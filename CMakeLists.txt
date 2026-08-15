@@ -27,6 +27,16 @@ pkg_check_modules(
 )
 
 #
+# Find OpenSSL (Phase 22.2.3: DTLS self-signed cert + fingerprint;
+# Phase 22.4 will use it for the actual DTLS handshake)
+#
+pkg_check_modules(
+    OPENSSL
+    REQUIRED
+    openssl
+)
+
+#
 # Include directories
 #
 include_directories(
@@ -45,6 +55,7 @@ include_directories(
     include/signaling
 
     ${LIBCAMERA_INCLUDE_DIRS}
+    ${OPENSSL_INCLUDE_DIRS}
 )
 
 #
@@ -87,6 +98,9 @@ set(SOURCES
     src/rtsp/pipeline_controller.cpp
 
     src/signaling/signaling_server.cpp
+    src/signaling/webrtc_sdp.cpp
+    src/signaling/dtls_cert.cpp
+    src/signaling/ice_credentials.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp
@@ -160,6 +174,7 @@ target_link_libraries(
     pthread
 
     ${LIBCAMERA_LIBRARIES}
+    ${OPENSSL_LIBRARIES}
 )
 
 target_link_libraries(
