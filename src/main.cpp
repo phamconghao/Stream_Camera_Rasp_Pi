@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstdint>
+#include <unistd.h>
 
 #include "app_state.h"
 #include "control_listener_thread.h"
@@ -8,6 +9,10 @@
 #include "rtsp_server.h"
 #include "pipeline_controller.h"
 #include "signaling_server.h"
+#include "webrtc_sdp.h"
+#include "dtls_cert.h"
+#include "ice_credentials.h"
+#include "sps_pps_cache.h"
 #include "json_lite.h"
 #include "log.h"
 
@@ -95,17 +100,105 @@
  * independent of any WebRTC logic not written yet.
  */
 
-// Phase 22.1: temporary handler - just proves messages are arriving
-// intact over the WebSocket connection. Replaced by real
-// offer/answer/ICE handling in Phase 22.2/22.3.
+// Phase 22.2.6: how long to wait for a freshly-primed pipeline to
+// produce SPS/PPS before giving up on an offer - same technique and
+// same timeout as Phase 20 step 5's handle_describe() priming (see
+// rtsp_server.cpp), duplicated here since this is a different TCP
+// server (signaling, not RTSP) with no code path connecting the two.
+static constexpr int OFFER_PRIME_MAX_WAIT_ITERATIONS = 20;
+static constexpr int OFFER_PRIME_WAIT_STEP_MS = 50;
+
+// Phase 22.2.6: dispatches a parsed "offer" message to the SDP answer
+// builder (webrtc_sdp.h) and sends the "answer" back over the same
+// signaling connection. ICE (22.3) and DTLS (22.4) haven't run yet at
+// this point - the answer just tells the browser how to reach this
+// project once those phases exist; nothing DATA-related (RTP/SRTP)
+// happens as a result of this yet.
+static void handle_offer(const std::string &client_id, const std::string &sdp)
+{
+    webrtc_sdp_offer_t offer = parse_webrtc_sdp_offer(sdp);
+    if (!offer.valid)
+    {
+        LOG_WARN("MAIN", "malformed/incomplete offer from client %s", client_id.c_str());
+        signaling_server_send(client_id, json_build_object({{"type", "error"}, {"message", "invalid or incomplete SDP offer"}}));
+        return;
+    }
+
+    // Same "prime the pipeline just long enough to get one SPS/PPS"
+    // trick as Phase 20 step 5's handle_describe() - a browser can
+    // just as easily be the very first connection of the process as
+    // an RTSP client can.
+    bool primed_pipeline = false;
+    if (!sps_pps_cache_has_both())
+    {
+        pipeline_controller_ensure_running();
+        primed_pipeline = true;
+
+        for (int i = 0; i < OFFER_PRIME_MAX_WAIT_ITERATIONS && !sps_pps_cache_has_both(); i++)
+        {
+            usleep(OFFER_PRIME_WAIT_STEP_MS * 1000);
+        }
+    }
+
+    if (!sps_pps_cache_has_both())
+    {
+        if (primed_pipeline)
+        {
+            pipeline_controller_release();
+        }
+
+        LOG_WARN("MAIN", "no SPS/PPS available after priming wait, rejecting offer from %s", client_id.c_str());
+        signaling_server_send(client_id, json_build_object({{"type", "error"}, {"message", "encoder not ready"}}));
+        return;
+    }
+
+    std::vector<uint8_t> sps = sps_pps_cache_get_sps();
+    std::vector<uint8_t> pps = sps_pps_cache_get_pps();
+
+    if (primed_pipeline)
+    {
+        pipeline_controller_release();
+    }
+
+    ice_credentials_t ice = generate_ice_credentials();
+    std::string fingerprint = dtls_cert_get_fingerprint_sha256();
+
+    std::string answer_sdp = build_webrtc_sdp_answer(ice.ufrag, ice.pwd, fingerprint, offer.mid, sps, pps);
+
+    LOG_INFO("MAIN", "sending answer to client %s (ice-ufrag=%s)", client_id.c_str(), ice.ufrag.c_str());
+
+    signaling_server_send(client_id, json_build_object({{"type", "answer"}, {"sdp", answer_sdp}}));
+}
+
+// Phase 22.2.6: real dispatch, replacing Phase 22.1's log-only
+// handler. Only "offer" is acted on so far - "ice-candidate" messages
+// are Phase 22.3's job (ICE) and are just logged for now, same as
+// everything was in 22.1.
 static void on_signaling_message(const std::string &client_id, const std::string &raw_json)
 {
     std::map<std::string, std::string> fields = json_parse_object(raw_json);
 
     auto it = fields.find("type");
-    std::string type = (it != fields.end()) ? it->second : "(no \"type\" field)";
+    std::string type = (it != fields.end()) ? it->second : "";
 
-    LOG_INFO("MAIN", "signaling message from client %s: type=%s", client_id.c_str(), type.c_str());
+    if (type == "offer")
+    {
+        auto sdp_it = fields.find("sdp");
+        if (sdp_it == fields.end())
+        {
+            LOG_WARN("MAIN", "offer from %s missing \"sdp\" field", client_id.c_str());
+            signaling_server_send(client_id, json_build_object({{"type", "error"}, {"message", "offer missing sdp field"}}));
+            return;
+        }
+        handle_offer(client_id, sdp_it->second);
+    }
+    else
+    {
+        // ice-candidate (Phase 22.3) and anything else: not acted on
+        // yet, just logged so the transport can still be verified
+        // end-to-end independent of ICE/DTLS not existing yet.
+        LOG_INFO("MAIN", "signaling message from client %s: type=%s (not yet handled)", client_id.c_str(), type.c_str());
+    }
 }
 
 int main(int argc, char **argv)
@@ -154,6 +247,15 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // Phase 22.2.3: one self-signed DTLS cert for the whole process
+    // lifetime, generated before the signaling server starts accepting
+    // offers (its fingerprint is required to build every SDP answer -
+    // see webrtc_sdp.h).
+    if (dtls_cert_init() < 0)
+    {
+        return -1;
+    }
+
     if (signaling_server_start(signaling_port, on_signaling_message) < 0)
     {
         return -1;
@@ -177,6 +279,8 @@ int main(int argc, char **argv)
     rtsp_server_stop();
 
     signaling_server_stop();
+
+    dtls_cert_cleanup();
 
     pipeline_controller_cleanup();
 

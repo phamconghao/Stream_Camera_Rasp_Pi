@@ -2,6 +2,8 @@
 
 #include <sstream>
 
+#include "base64.h"
+
 namespace
 {
 
@@ -29,6 +31,31 @@ bool try_strip_prefix(const std::string &line, const std::string &prefix, std::s
     }
     out_rest = line.substr(prefix.size());
     return true;
+}
+
+// Same profile-level-id extraction as rtsp_server.cpp's
+// sps_profile_level_id_hex() (Phase 20 step 5) - duplicated here
+// rather than shared because the two SDP builders otherwise share
+// nothing and pulling this one helper into a common header isn't
+// worth the indirection for 6 lines of code.
+static std::string sps_profile_level_id_hex(const std::vector<uint8_t> &sps)
+{
+    static const char *HEX = "0123456789ABCDEF";
+
+    if (sps.size() < 4)
+    {
+        return "000000";
+    }
+
+    std::string hex;
+    hex.reserve(6);
+    for (int i = 1; i <= 3; i++)
+    {
+        hex += HEX[(sps[i] >> 4) & 0x0F];
+        hex += HEX[sps[i] & 0x0F];
+    }
+
+    return hex;
 }
 
 } // namespace
@@ -98,4 +125,42 @@ webrtc_sdp_offer_t parse_webrtc_sdp_offer(const std::string &sdp)
                   !offer.mid.empty();
 
     return offer;
+}
+
+std::string build_webrtc_sdp_answer(
+    const std::string &ice_ufrag,
+    const std::string &ice_pwd,
+    const std::string &fingerprint_sha256,
+    const std::string &mid,
+    const std::vector<uint8_t> &sps,
+    const std::vector<uint8_t> &pps)
+{
+    std::string profile_level_id = sps_profile_level_id_hex(sps);
+    std::string sprop_parameter_sets = base64_encode(sps) + "," + base64_encode(pps);
+
+    std::ostringstream sdp;
+    sdp << "v=0\r\n";
+    sdp << "o=- 0 0 IN IP4 0.0.0.0\r\n";
+    sdp << "s=Raspberry Pi Camera Stream\r\n";
+    sdp << "t=0 0\r\n";
+    sdp << "a=group:BUNDLE " << mid << "\r\n";
+    sdp << "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n";
+    sdp << "c=IN IP4 0.0.0.0\r\n";
+    sdp << "a=rtcp-mux\r\n";
+    sdp << "a=mid:" << mid << "\r\n";
+    sdp << "a=ice-ufrag:" << ice_ufrag << "\r\n";
+    sdp << "a=ice-pwd:" << ice_pwd << "\r\n";
+    sdp << "a=fingerprint:sha-256 " << fingerprint_sha256 << "\r\n";
+    // Always "passive": this project's Pi-side answer never initiates
+    // the DTLS handshake itself (Phase 22.4) - the browser always
+    // does, regardless of which of "actpass"/"active" it offered.
+    sdp << "a=setup:passive\r\n";
+    sdp << "a=sendonly\r\n"; // this project only sends video, never receives any from the browser
+    sdp << "a=rtpmap:96 H264/90000\r\n";
+    sdp << "a=rtcp-fb:96 nack\r\n";
+    sdp << "a=rtcp-fb:96 nack pli\r\n";
+    sdp << "a=fmtp:96 packetization-mode=1;profile-level-id=" << profile_level_id
+        << ";sprop-parameter-sets=" << sprop_parameter_sets << "\r\n";
+
+    return sdp.str();
 }

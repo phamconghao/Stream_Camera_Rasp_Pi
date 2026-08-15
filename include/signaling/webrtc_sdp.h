@@ -1,7 +1,9 @@
 #ifndef __WEBRTC_SDP_H__
 #define __WEBRTC_SDP_H__
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 /**
  * PHASE 22.2 (WebRTC-compatible SDP) - part 1/2 (this file: types +
@@ -43,5 +45,41 @@ struct webrtc_sdp_offer_t
 // rather than a thrown exception - same "fail soft, let the caller
 // decide what to do" convention as rtsp_message.h's rtsp_parse_request().
 webrtc_sdp_offer_t parse_webrtc_sdp_offer(const std::string &sdp);
+
+/**
+ * PHASE 22.2 part 2/2: SDP answer builder.
+ *
+ * Builds the SDP this project sends back after receiving+parsing a
+ * browser's offer (parse_webrtc_sdp_offer() above). Distinct from
+ * Phase 20 step 5's handle_describe() SDP in the attributes that
+ * matter for WebRTC specifically:
+ *   - m=video ... UDP/TLS/RTP/SAVPF 96   (Secure + feedback profile,
+ *     not RTSP's plain "RTP/AVP")
+ *   - a=ice-ufrag / a=ice-pwd            (this project's OWN ICE
+ *     credentials for THIS connection - see ice_credentials.h -  not
+ *     an echo of the offer's)
+ *   - a=fingerprint:sha-256 ...          (this project's DTLS cert
+ *     fingerprint - see dtls_cert.h - proves which cert will actually
+ *     be used in the Phase 22.4 DTLS handshake)
+ *   - a=setup:passive                    (this project always waits
+ *     for the browser to initiate the DTLS handshake, never the other
+ *     way around - simplest role split for an embedded device that's
+ *     always the "server" side of the connection)
+ *   - a=rtcp-fb:96 nack / nack pli       (declares support for the
+ *     browser's loss-recovery feedback - Phase 22.6's job to actually
+ *     act on it, this just advertises the capability)
+ *
+ * sprop-parameter-sets is built the exact same way as Phase 20 step
+ * 5's handle_describe() (same sps_pps_cache.h + base64.h), just
+ * copied into this different SDP shape rather than shared code, since
+ * the two SDP builders diverge in almost everything else.
+ */
+std::string build_webrtc_sdp_answer(
+    const std::string &ice_ufrag,
+    const std::string &ice_pwd,
+    const std::string &fingerprint_sha256,
+    const std::string &mid,
+    const std::vector<uint8_t> &sps,
+    const std::vector<uint8_t> &pps);
 
 #endif // __WEBRTC_SDP_H__

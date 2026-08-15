@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>WebRTC Signaling Test</title>
+<style>
+  body {
+    background: #111;
+    color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 24px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 18px; color: #9aa; margin-bottom: 6px; }
+  p.subtitle { font-size: 13px; color: #888; margin-top: 0; margin-bottom: 20px; }
+  .card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    margin: 0 0 10px 0;
+    font-weight: 500;
+  }
+  label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+  input[type=text] {
+    width: 100%;
+    background: #111;
+    border: 1px solid #2a2a2a;
+    color: #eee;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    box-sizing: border-box;
+    margin-bottom: 12px;
+  }
+  button {
+    background: #2a2a4a;
+    border: 1px solid #4a4a8a;
+    color: #cdf;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .ok { color: #4ade80; }
+  .warn { color: #facc15; }
+  .bad { color: #f87171; }
+  pre {
+    background: #0c0c0c;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  #checklist div { font-size: 13px; margin-bottom: 4px; }
+  #log {
+    font-size: 12px;
+    color: #666;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  #log div { margin-bottom: 2px; }
+</style>
+</head>
+<body>
+  <h1>WebRTC Signaling Test (Phase 22.2)</h1>
+  <p class="subtitle">
+    Kiểm tra kênh signaling (WebSocket) và SDP offer/answer. Trang này KHÔNG thử
+    kết nối ICE/DTLS thật - chỉ xác nhận trình duyệt tạo offer được, server trả
+    answer hợp lệ, và <code>setRemoteDescription()</code> chấp nhận answer đó
+    (tức Chrome parse SDP thành công). Kết nối P2P thật là việc của Phase 22.3-22.4.
+  </p>
+
+  <div class="card">
+    <h2>Kết nối signaling server</h2>
+    <label for="wsUrl">WebSocket URL</label>
+    <input type="text" id="wsUrl" value="ws://localhost:8765">
+    <button id="btnConnect">Connect + Send Offer</button>
+    <div id="connStatus" style="margin-top: 10px; font-size: 13px;">Chưa kết nối</div>
+  </div>
+
+  <div class="card">
+    <h2>Kết quả kiểm tra</h2>
+    <div id="checklist">
+      <div id="check-ws">⬜ WebSocket handshake</div>
+      <div id="check-offer">⬜ Tạo SDP offer (createOffer)</div>
+      <div id="check-send">⬜ Gửi offer qua signaling</div>
+      <div id="check-answer">⬜ Nhận answer từ server</div>
+      <div id="check-setremote">⬜ setRemoteDescription(answer) chấp nhận (SDP hợp lệ với Chrome)</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>SDP Offer (trình duyệt tạo)</h2>
+    <pre id="offerSdp">(chưa có)</pre>
+  </div>
+
+  <div class="card">
+    <h2>SDP Answer (nhận từ Pi)</h2>
+    <pre id="answerSdp">(chưa có)</pre>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+
+<script>
+// Phase 22.2.7: real-browser verification that the signaling
+// server's WebSocket transport (Phase 22.1) and SDP answer builder
+// (Phase 22.2.5-22.2.6) actually work against a real RTCPeerConnection,
+// not just the simulated/hand-built test offers used to verify the
+// server standalone. Deliberately stops right after
+// setRemoteDescription() succeeds - actually reaching a connected ICE
+// state requires Phase 22.3 (ICE candidate exchange) and Phase 22.4
+// (DTLS handshake), neither implemented yet.
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  const time = new Date().toLocaleTimeString();
+  line.textContent = `[${time}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+  console.log(msg);
+}
+
+function setCheck(id, ok, detail) {
+  const el = document.getElementById(id);
+  const label = el.textContent.replace(/^[⬜✅❌]\s*/, '');
+  el.textContent = (ok ? '✅ ' : '❌ ') + label + (detail ? ' - ' + detail : '');
+  el.className = ok ? 'ok' : 'bad';
+}
+
+document.getElementById('btnConnect').addEventListener('click', async () => {
+  const btn = document.getElementById('btnConnect');
+  btn.disabled = true;
+
+  const wsUrl = document.getElementById('wsUrl').value.trim();
+  const connStatus = document.getElementById('connStatus');
+
+  let ws;
+  let pc;
+
+  try {
+    // --- Step 1: WebSocket handshake (Phase 22.1) ---
+    log(`Connecting to ${wsUrl} ...`);
+    ws = new WebSocket(wsUrl);
+
+    await new Promise((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = (e) => reject(new Error('WebSocket connection failed - is camera_app running and reachable at this URL?'));
+      setTimeout(() => reject(new Error('WebSocket connect timed out (5s)')), 5000);
+    });
+
+    setCheck('check-ws', true);
+    connStatus.textContent = 'Đã kết nối WebSocket';
+    connStatus.className = 'ok';
+    log('WebSocket handshake OK');
+
+    // --- Step 2: create an SDP offer (recvonly video, since this
+    // project only ever sends video - see build_webrtc_sdp_answer()'s
+    // a=sendonly in the answer) ---
+    pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN needed yet - Phase 22.3
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // setLocalDescription can take a moment to finish ICE gathering
+    // depending on the browser; the offer's SDP text itself (what we
+    // actually need to send) is already final at this point though -
+    // ICE candidates get exchanged separately in Phase 22.3 regardless.
+    document.getElementById('offerSdp').textContent = pc.localDescription.sdp;
+    setCheck('check-offer', true);
+    log('Created SDP offer via RTCPeerConnection.createOffer()');
+
+    // --- Step 3: send it over signaling (Phase 22.1's JSON envelope) ---
+    const offerMsg = JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp });
+    ws.send(offerMsg);
+    setCheck('check-send', true);
+    log('Sent offer over WebSocket');
+
+    // --- Step 4: wait for the answer ---
+    const answerMsg = await new Promise((resolve, reject) => {
+      ws.onmessage = (event) => resolve(event.data);
+      setTimeout(() => reject(new Error('No answer received within 10s')), 10000);
+    });
+
+    const parsed = JSON.parse(answerMsg);
+
+    if (parsed.type === 'error') {
+      throw new Error(`Server rejected offer: ${parsed.message}`);
+    }
+    if (parsed.type !== 'answer') {
+      throw new Error(`Expected "answer", got "${parsed.type}"`);
+    }
+
+    document.getElementById('answerSdp').textContent = parsed.sdp;
+    setCheck('check-answer', true);
+    log('Received SDP answer from signaling server');
+
+    // --- Step 5: the real test - does Chrome accept this SDP? ---
+    await pc.setRemoteDescription({ type: 'answer', sdp: parsed.sdp });
+    setCheck('check-setremote', true, 'Chrome parsed the answer SDP without error');
+    log('setRemoteDescription(answer) succeeded - SDP answer is well-formed');
+
+    connStatus.textContent = 'Hoàn tất kiểm tra signaling/SDP (chưa thử kết nối ICE/DTLS thật)';
+
+  } catch (err) {
+    log('ERROR: ' + err.message);
+    connStatus.textContent = 'Lỗi: ' + err.message;
+    connStatus.className = 'bad';
+
+    // Mark whichever check was in-flight as failed, based on what we
+    // know already succeeded.
+    if (!document.getElementById('check-ws').textContent.includes('✅')) {
+      setCheck('check-ws', false, err.message);
+    } else if (!document.getElementById('check-offer').textContent.includes('✅')) {
+      setCheck('check-offer', false, err.message);
+    } else if (!document.getElementById('check-send').textContent.includes('✅')) {
+      setCheck('check-send', false, err.message);
+    } else if (!document.getElementById('check-answer').textContent.includes('✅')) {
+      setCheck('check-answer', false, err.message);
+    } else {
+      setCheck('check-setremote', false, err.message);
+    }
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
