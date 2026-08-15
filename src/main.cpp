@@ -7,6 +7,9 @@
 #include "rtcp_sender_thread.h"
 #include "rtsp_server.h"
 #include "pipeline_controller.h"
+#include "signaling_server.h"
+#include "json_lite.h"
+#include "log.h"
 
 /**
  * ============================================================================
@@ -78,7 +81,32 @@
  * dest_ip/dest_port CLI argument earlier phases used for point-to-point
  * testing - that argument is gone below. See udp_sender.h and
  * pipeline_controller.h for the full picture.
+ *
+ * PHASE 22.1 (WebRTC signaling, separate from everything above): a
+ * second, independent TCP server - signaling/signaling_server.{h,cpp} -
+ * listens on `signaling_port` for WebSocket connections from a
+ * browser's RTCPeerConnection. It has nothing to do with the RTSP/RTP
+ * data path yet; this phase only delivers whatever JSON message a
+ * client sends to the handler below, unparsed beyond finding "type".
+ * Actually acting on "offer"/"ice-candidate" messages (building a
+ * WebRTC-flavored SDP answer, starting ICE) is Phase 22.2/22.3 - for
+ * now the handler just logs what arrived, so the WebSocket
+ * handshake/framing itself can be verified against a real browser
+ * independent of any WebRTC logic not written yet.
  */
+
+// Phase 22.1: temporary handler - just proves messages are arriving
+// intact over the WebSocket connection. Replaced by real
+// offer/answer/ICE handling in Phase 22.2/22.3.
+static void on_signaling_message(const std::string &client_id, const std::string &raw_json)
+{
+    std::map<std::string, std::string> fields = json_parse_object(raw_json);
+
+    auto it = fields.find("type");
+    std::string type = (it != fields.end()) ? it->second : "(no \"type\" field)";
+
+    LOG_INFO("MAIN", "signaling message from client %s: type=%s", client_id.c_str(), type.c_str());
+}
 
 int main(int argc, char **argv)
 {
@@ -88,6 +116,10 @@ int main(int argc, char **argv)
 
     // TCP port the RTSP control plane listens on (Phase 20).
     uint16_t rtsp_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 8554;
+
+    // TCP port the WebRTC signaling (WebSocket) server listens on
+    // (Phase 22.1) - independent of rtsp_port above.
+    uint16_t signaling_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 8765;
 
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
@@ -122,7 +154,13 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    if (signaling_server_start(signaling_port, on_signaling_message) < 0)
+    {
+        return -1;
+    }
+
     std::cout << "RTSP server ready at rtsp://<this-pi-ip>:" << rtsp_port << "/stream" << std::endl;
+    std::cout << "WebRTC signaling server ready at ws://<this-pi-ip>:" << signaling_port << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -137,6 +175,8 @@ int main(int argc, char **argv)
     rtcp_sender_thread_stop();
 
     rtsp_server_stop();
+
+    signaling_server_stop();
 
     pipeline_controller_cleanup();
 

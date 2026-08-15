@@ -42,6 +42,7 @@ include_directories(
     include/common
     include/network
     include/rtsp
+    include/signaling
 
     ${LIBCAMERA_INCLUDE_DIRS}
 )
@@ -85,9 +86,13 @@ set(SOURCES
     src/rtsp/rtsp_server.cpp
     src/rtsp/pipeline_controller.cpp
 
+    src/signaling/signaling_server.cpp
+
     src/common/app_state.cpp
     src/common/log.cpp
     src/common/base64.cpp
+    src/common/sha1.cpp
+    src/common/json_lite.cpp
 )
 
 #
