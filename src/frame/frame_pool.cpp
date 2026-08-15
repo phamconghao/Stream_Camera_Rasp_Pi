@@ -4,6 +4,16 @@
 
 #include "frame_pool.h"
 
+/**
+ * UNUSED GENERIC SCAFFOLDING - not called anywhere in main.cpp,
+ * main_receiver.cpp, or pipeline_controller.cpp. Superseded by the
+ * specialized raw_frame_pool.cpp/encoded_frame_pool.cpp, which are
+ * what the actual pipeline uses (see roadmap.md's known-debt notes).
+ * Kept only because it's still listed as a build source; safe to
+ * delete in a future cleanup pass, same category as the h264_writer
+ * module Phase 20 step 6 already removed.
+ */
+
 typedef struct
 {
     encoded_frame_t frames[FRAME_POOL_SIZE];
@@ -33,6 +43,8 @@ int frame_pool_init(void)
     return 0;
 }
 
+// Linear scan for a free slot - fine at FRAME_POOL_SIZE's small scale,
+// same tradeoff the specialized pools that superseded this one make.
 encoded_frame_t *frame_pool_acquire(void)
 {
     pthread_mutex_lock(&g_pool.lock);
@@ -52,6 +64,11 @@ encoded_frame_t *frame_pool_acquire(void)
     return NULL;
 }
 
+// Reference-counted release: only actually frees the slot back to the
+// pool once the LAST holder releases it (fetch_sub returning 1 means
+// this call took the count from 1 to 0) - lets a frame be handed to
+// multiple consumers (e.g. a queue AND something inspecting it
+// directly) without either one needing to know when the other is done.
 void frame_pool_release(encoded_frame_t *frame)
 {
     if (!frame)
