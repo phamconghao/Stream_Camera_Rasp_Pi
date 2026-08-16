@@ -102,6 +102,7 @@
       <div id="check-setremote">⬜ setRemoteDescription(answer) chấp nhận (SDP hợp lệ với Chrome)</div>
       <div id="check-icecandidate">⬜ Nhận + addIceCandidate() candidate từ Pi</div>
       <div id="check-iceconnect">⬜ ICE connection state = connected/completed (STUN connectivity check thành công)</div>
+      <div id="check-dtlsconnect">⬜ RTCPeerConnection.connectionState = connected (DTLS handshake hoàn tất - Phase 22.4)</div>
     </div>
   </div>
 
@@ -221,6 +222,25 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
       }
     };
 
+    // Phase 22.4: connectionState (distinct from iceConnectionState
+    // above) additionally requires the DTLS handshake to complete -
+    // this is the real payoff of dtls_handshake.cpp actually working
+    // against a real browser's DTLS client.
+    let dtlsConnectedResolve, dtlsConnectedReject;
+    const dtlsConnectedPromise = new Promise((resolve, reject) => {
+      dtlsConnectedResolve = resolve;
+      dtlsConnectedReject = reject;
+    });
+
+    pc.onconnectionstatechange = () => {
+      log(`connectionState -> ${pc.connectionState}`);
+      if (pc.connectionState === 'connected') {
+        dtlsConnectedResolve();
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        dtlsConnectedReject(new Error(`connectionState became "${pc.connectionState}"`));
+      }
+    };
+
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
@@ -286,7 +306,17 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
     await Promise.race([iceConnectedPromise, timeoutPromise]);
 
     setCheck('check-iceconnect', true, `iceConnectionState=${pc.iceConnectionState}`);
-    connStatus.textContent = 'ICE kết nối thành công! (DTLS handshake là việc của Phase 22.4, chưa thử ở đây)';
+    connStatus.textContent = 'ICE kết nối thành công! Đang chờ DTLS handshake...';
+
+    // --- Step 7: wait for the DTLS handshake (Phase 22.4) to
+    // complete too - connectionState reaching "connected" ---
+    const dtlsTimeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('DTLS handshake timed out after 15s')), 15000)
+    );
+    await Promise.race([dtlsConnectedPromise, dtlsTimeoutPromise]);
+
+    setCheck('check-dtlsconnect', true, `connectionState=${pc.connectionState}`);
+    connStatus.textContent = 'Hoàn tất! ICE + DTLS đều đã kết nối. (SRTP/media - Phase 22.5 - chưa thử ở đây)';
 
   } catch (err) {
     log('ERROR: ' + err.message);
@@ -295,7 +325,7 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
 
     // Mark whichever check was in-flight as failed, based on what we
     // know already succeeded.
-    const order = ['check-ws', 'check-offer', 'check-send', 'check-answer', 'check-setremote', 'check-icecandidate', 'check-iceconnect'];
+    const order = ['check-ws', 'check-offer', 'check-send', 'check-answer', 'check-setremote', 'check-icecandidate', 'check-iceconnect', 'check-dtlsconnect'];
     for (const id of order) {
       if (!document.getElementById(id).textContent.includes('✅')) {
         setCheck(id, false, err.message);

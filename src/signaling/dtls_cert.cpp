@@ -128,6 +128,14 @@ static std::string compute_fingerprint_sha256(X509 *cert)
     return out;
 }
 
+// Public wrapper (Phase 22.4) - same logic, exposed for
+// dtls_handshake.cpp to call on the REMOTE peer's certificate, not
+// just this project's own.
+std::string dtls_cert_fingerprint_sha256(X509 *cert)
+{
+    return compute_fingerprint_sha256(cert);
+}
+
 int dtls_cert_init(void)
 {
     g_pkey = generate_key();
@@ -177,4 +185,14 @@ void dtls_cert_cleanup(void)
 std::string dtls_cert_get_fingerprint_sha256(void)
 {
     return g_fingerprint;
+}
+
+X509 *dtls_cert_get_cert(void)
+{
+    return g_cert;
+}
+
+EVP_PKEY *dtls_cert_get_pkey(void)
+{
+    return g_pkey;
 }

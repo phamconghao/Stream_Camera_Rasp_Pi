@@ -14,6 +14,7 @@
 #include "ice_credentials.h"
 #include "ice_candidate.h"
 #include "ice_agent.h"
+#include "dtls_handshake.h"
 #include "sps_pps_cache.h"
 #include "json_lite.h"
 #include "log.h"
@@ -179,6 +180,12 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     // what triggers the browser to start ICE) is even sent.
     ice_agent_register_session(ice.ufrag, ice.pwd);
 
+    // Phase 22.4: this session's DTLS handshake (whenever the browser
+    // actually starts it, over the ICE-verified UDP path above)
+    // needs to know which certificate fingerprint to expect from the
+    // browser - straight from the offer this project just parsed.
+    dtls_handshake_register_session(ice.ufrag, offer.fingerprint_algo, offer.fingerprint_hex);
+
     LOG_INFO("MAIN", "sending answer to client %s (ice-ufrag=%s)", client_id.c_str(), ice.ufrag.c_str());
 
     signaling_server_send(client_id, json_build_object({{"type", "answer"}, {"sdp", answer_sdp}}));
@@ -304,6 +311,16 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // Phase 22.4: builds the shared SSL_CTX (cert/key from
+    // dtls_cert_init() above, SRTP profile negotiation enabled) every
+    // DTLS session's handshake uses - must happen after dtls_cert_init()
+    // and before any offer could arrive (same "ready before it's
+    // needed" reasoning as ice_agent_start() below).
+    if (dtls_handshake_init() < 0)
+    {
+        return -1;
+    }
+
     if (signaling_server_start(signaling_port, on_signaling_message) < 0)
     {
         return -1;
@@ -338,6 +355,8 @@ int main(int argc, char **argv)
     signaling_server_stop();
 
     ice_agent_stop();
+
+    dtls_handshake_cleanup();
 
     dtls_cert_cleanup();
 

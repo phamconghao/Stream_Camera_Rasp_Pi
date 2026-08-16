@@ -3,19 +3,34 @@
 
 #include <string>
 
+#include <openssl/x509.h>
+#include <openssl/evp.h>
+
 /**
  * PHASE 22.2.3 (WebRTC): one self-signed certificate for the whole
  * process lifetime - NOT per-connection. WebRTC's DTLS handshake
- * (Phase 22.4, not yet implemented) doesn't validate this cert
- * against a CA the way a browser validates a website's HTTPS cert;
- * it only checks that the cert actually used during the DTLS
- * handshake matches the SHA-256 fingerprint advertised in the SDP
- * answer (`a=fingerprint:sha-256 ...`, see webrtc_sdp.h/this phase's
- * answer builder). That's WebRTC's actual trust model: "I trust
- * whichever peer I exchanged this exact fingerprint with over
- * signaling" - not a CA chain. Uses OpenSSL (this project's first use
- * of it) rather than hand-rolled crypto, per this phase's design
- * decision - see roadmap.md's Phase 22 breakdown.
+ * (Phase 22.4) doesn't validate this cert against a CA the way a
+ * browser validates a website's HTTPS cert; it only checks that the
+ * cert actually used during the DTLS handshake matches the SHA-256
+ * fingerprint advertised in the SDP answer (`a=fingerprint:sha-256
+ * ...`, see webrtc_sdp.h/this phase's answer builder). That's
+ * WebRTC's actual trust model: "I trust whichever peer I exchanged
+ * this exact fingerprint with over signaling" - not a CA chain. Uses
+ * OpenSSL (this project's first use of it) rather than hand-rolled
+ * crypto, per this phase's design decision - see roadmap.md's Phase
+ * 22 breakdown.
+ *
+ * PHASE 22.4 update: dtls_cert_get_cert()/_get_pkey() below expose
+ * the underlying OpenSSL objects so dtls_handshake.cpp can load them
+ * into an SSL_CTX. dtls_cert_fingerprint_sha256() is generic (any
+ * X509*, not just this project's own cert) so dtls_handshake.cpp can
+ * reuse it to check the REMOTE peer's certificate - presented during
+ * the handshake - against the fingerprint the browser advertised in
+ * its SDP offer (parse_webrtc_sdp_offer()'s output, Phase 22.2.2).
+ * That check, not any CA chain, is what actually prevents a
+ * man-in-the-middle here: the fingerprint was exchanged over the
+ * (trusted) signaling channel, so a handshake presenting a DIFFERENT
+ * cert than what was promised means someone else is on the UDP path.
  */
 
 // Generates (once) a self-signed EC certificate + private key,
@@ -31,5 +46,18 @@ void dtls_cert_cleanup(void);
 // colon-separated (e.g. "AB:CD:EF:..."). Empty string if
 // dtls_cert_init() hasn't been called yet or failed.
 std::string dtls_cert_get_fingerprint_sha256(void);
+
+// Non-owning pointers to this project's own cert/key - valid between
+// dtls_cert_init() and dtls_cert_cleanup(). Used by dtls_handshake.cpp
+// to build the SSL_CTX every DTLS session shares (see dtls_handshake.h).
+X509 *dtls_cert_get_cert(void);
+EVP_PKEY *dtls_cert_get_pkey(void);
+
+// Same SHA-256-fingerprint-as-SDP-string formatting as
+// dtls_cert_get_fingerprint_sha256(), but for an ARBITRARY cert - used
+// on the remote peer's certificate (obtained via
+// SSL_get_peer_certificate() once a DTLS handshake completes) to
+// verify it matches what the SDP offer promised.
+std::string dtls_cert_fingerprint_sha256(X509 *cert);
 
 #endif // __DTLS_CERT_H__
