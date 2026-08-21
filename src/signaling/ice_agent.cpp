@@ -12,6 +12,7 @@
 
 #include "stun_message.h"
 #include "dtls_handshake.h"
+#include "srtp_session.h"
 #include "log.h"
 
 static const char *TAG = "ICE_AGENT";
@@ -101,15 +102,18 @@ static bool lookup_local_pwd(const std::string &username, std::string &out_pwd)
     return found;
 }
 
-// RFC 7983 section 7's demultiplexing table, boiled down to just the
-// two content types this project actually handles on this shared
-// port (STUN and DTLS - RTP/RTCP for actual media, Phase 22.5+,
-// travels over udp_sender's own separate socket, not this one, so
-// there's no third case to handle here).
+// RFC 7983 section 7's demultiplexing table, boiled down to the
+// content types this project actually handles on this shared port:
+// STUN, DTLS, and now (Phase 22.5.4) SRTCP - the encrypted RTCP
+// feedback (NACK/PLI) a browser sends back. There's no separate "RTP"
+// case: this project's SDP always advertises a=sendonly (webrtc_sdp.cpp),
+// meaning it never expects the browser to send it any RTP at all - any
+// packet in RFC 7983's 128-191 range arriving here can only be RTCP.
 enum class packet_kind_t
 {
     STUN,
     DTLS,
+    SRTCP,
     UNKNOWN,
 };
 
@@ -130,8 +134,42 @@ static packet_kind_t classify_packet(const uint8_t *data, size_t size)
     {
         return packet_kind_t::DTLS;
     }
+    if (first_byte >= 128 && first_byte <= 191)
+    {
+        return packet_kind_t::SRTCP;
+    }
 
     return packet_kind_t::UNKNOWN;
+}
+
+// Minimal RTCP feedback identification (RFC 4585 section 6.1 for
+// generic NACK, RFC 4585 section 6.3 for payload-specific feedback -
+// PLI is FMT=1 there) - just enough to log something a human debugging
+// this project can act on, NOT a full RTCP compound-packet parser.
+// Called on the PLAINTEXT bytes after srtp_session_unprotect_rtcp()
+// has already removed SRTCP's encryption/auth layer.
+static const char *describe_rtcp_feedback(const uint8_t *data, size_t size)
+{
+    if (size < 2)
+    {
+        return "(too short to identify)";
+    }
+
+    uint8_t fmt = data[0] & 0x1F; // low 5 bits of byte 0
+    uint8_t payload_type = data[1];
+
+    if (payload_type == 205) // RTPFB - generic RTP feedback
+    {
+        return (fmt == 1) ? "NACK (generic negative ack, RFC 4585)" : "RTPFB (other FMT)";
+    }
+    if (payload_type == 206) // PSFB - payload-specific feedback
+    {
+        if (fmt == 1) return "PLI (picture loss indication, RFC 4585)";
+        if (fmt == 4) return "FIR (full intra request, RFC 5104)";
+        return "PSFB (other FMT)";
+    }
+
+    return "(not RTPFB/PSFB - other RTCP packet type)";
 }
 
 static void *ice_agent_thread_func(void *arg)
@@ -198,6 +236,58 @@ static void *ice_agent_thread_func(void *arg)
                     sendto(socket_fd, data, size, 0,
                            reinterpret_cast<const struct sockaddr *>(&dest_addr), dest_len);
                 });
+
+            continue;
+        }
+
+        if (kind == packet_kind_t::SRTCP)
+        {
+            // Phase 22.5.4: encrypted RTCP feedback (NACK/PLI) from
+            // the browser - only meaningful once that address's DTLS
+            // handshake has actually completed (srtp_session_create()
+            // runs at the end of dtls_handshake.cpp's handshake
+            // thread, see dtls_handshake_is_connected()), so this can
+            // legitimately arrive before that and should be dropped
+            // quietly rather than logged as a warning - it's an
+            // expected race, not a bug, and browsers do occasionally
+            // send RTCP a little eagerly relative to when this
+            // project's own handshake thread finishes.
+            std::string addr_key = make_addr_key(sender_ip, sender_port);
+
+            pthread_mutex_lock(&g_nominated_pairs_lock);
+            auto pair_it = g_nominated_pairs.find(addr_key);
+            bool found = (pair_it != g_nominated_pairs.end());
+            std::string ufrag = found ? pair_it->second : "";
+            pthread_mutex_unlock(&g_nominated_pairs_lock);
+
+            if (!found)
+            {
+                continue;
+            }
+
+            int len = static_cast<int>(n);
+            bool ok = srtp_session_unprotect_rtcp(ufrag, buffer, sizeof(buffer), &len);
+            if (!ok)
+            {
+                // Either no SRTP session yet for this ufrag (handshake
+                // still in progress - see comment above) or a genuine
+                // auth failure (corrupted/replayed/forged packet,
+                // rejected by libsrtp2's own auth tag check - see
+                // srtp_session.cpp). Either way, nothing more to do
+                // with it.
+                continue;
+            }
+
+            LOG_INFO(TAG, "SRTCP feedback from %s:%u (ufrag=%s): %s",
+                     sender_ip, sender_port, ufrag.c_str(), describe_rtcp_feedback(buffer, static_cast<size_t>(len)));
+
+            // NOT wired to actually DO anything about NACK/PLI yet
+            // (e.g. triggering bcm2835_encoder's force-keyframe path
+            // the way control_listener_thread.h's UDP control channel
+            // already does for the RTSP path) - that's Phase 22.6's
+            // "end to end integration" job, same scope boundary as
+            // srtp_session_protect_rtp() not being called with real
+            // camera RTP yet (see srtp_session.h's header comment).
 
             continue;
         }
