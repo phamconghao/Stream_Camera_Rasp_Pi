@@ -15,6 +15,7 @@
 #include "ice_candidate.h"
 #include "ice_agent.h"
 #include "dtls_handshake.h"
+#include "srtp_session.h"
 #include "sps_pps_cache.h"
 #include "json_lite.h"
 #include "log.h"
@@ -321,6 +322,14 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // Phase 22.5: libsrtp2's own one-time global init - must happen
+    // before dtls_handshake.cpp's first DTLS handshake could possibly
+    // complete and try to call srtp_session_create().
+    if (srtp_session_manager_init() < 0)
+    {
+        return -1;
+    }
+
     if (signaling_server_start(signaling_port, on_signaling_message) < 0)
     {
         return -1;
@@ -357,6 +366,8 @@ int main(int argc, char **argv)
     ice_agent_stop();
 
     dtls_handshake_cleanup();
+
+    srtp_session_manager_cleanup();
 
     dtls_cert_cleanup();
 

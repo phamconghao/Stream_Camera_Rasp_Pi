@@ -37,6 +37,16 @@ pkg_check_modules(
 )
 
 #
+# Find libsrtp2 (Phase 22.5: SRTP encrypt/decrypt using the keying
+# material Phase 22.4's DTLS handshake exports)
+#
+pkg_check_modules(
+    LIBSRTP2
+    REQUIRED
+    libsrtp2
+)
+
+#
 # Include directories
 #
 include_directories(
@@ -56,6 +66,7 @@ include_directories(
 
     ${LIBCAMERA_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIRS}
+    ${LIBSRTP2_INCLUDE_DIRS}
 )
 
 #
@@ -105,6 +116,7 @@ set(SOURCES
     src/signaling/stun_message.cpp
     src/signaling/ice_agent.cpp
     src/signaling/dtls_handshake.cpp
+    src/signaling/srtp_session.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp
@@ -179,6 +191,7 @@ target_link_libraries(
 
     ${LIBCAMERA_LIBRARIES}
     ${OPENSSL_LIBRARIES}
+    ${LIBSRTP2_LIBRARIES}
 )
 
 target_link_libraries(

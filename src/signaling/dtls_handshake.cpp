@@ -13,6 +13,7 @@
 #include <openssl/srtp.h>
 
 #include "dtls_cert.h"
+#include "srtp_session.h"
 #include "log.h"
 
 static const char *TAG = "DTLS_HS";
@@ -159,6 +160,8 @@ void dtls_handshake_cleanup(void)
             SSL_free(session->ssl); // also frees read_bio/write_bio, since SSL_set_bio() transferred ownership to the SSL object
         }
 
+        srtp_session_destroy(pair.first);
+
         delete session;
     }
 
@@ -211,6 +214,8 @@ void dtls_handshake_unregister_session(const std::string &ice_ufrag)
     {
         SSL_free(session->ssl);
     }
+
+    srtp_session_destroy(ice_ufrag); // no-op if srtp_session_create() was never reached/succeeded for this session
 
     delete session;
     g_sessions.erase(it);
@@ -396,6 +401,21 @@ static void *handshake_thread_func(void *arg)
     session->connected = true;
     LOG_INFO(TAG, "DTLS handshake COMPLETE for ufrag=%s - fingerprint verified, SRTP keying material exported",
              session->ice_ufrag.c_str());
+
+    // Phase 22.5.3: the keying material is only useful once turned
+    // into actual libsrtp2 contexts - do that immediately rather than
+    // waiting for something else to notice this session connected,
+    // since nothing else currently polls dtls_handshake_is_connected()
+    // for that purpose.
+    if (srtp_session_create(session->ice_ufrag, session->srtp_keying_material) < 0)
+    {
+        LOG_ERROR(TAG, "failed to create SRTP session for ufrag=%s despite a successful DTLS handshake",
+                  session->ice_ufrag.c_str());
+        // Not treated as a DTLS-level failure (session->connected stays
+        // true - the handshake itself genuinely succeeded) - but this
+        // session's traffic can't actually be encrypted/decrypted
+        // until something retries srtp_session_create() for it.
+    }
 
     return nullptr;
 }
