@@ -95,6 +95,8 @@ set(SOURCES
     src/rtp/rtp_packetizer_thread.cpp
     src/rtp/rtp_packet_pool.cpp
     src/rtp/rtp_packet_queue.cpp
+    src/rtp/webrtc_rtp_packet_pool.cpp
+    src/rtp/webrtc_rtp_packet_queue.cpp
     src/rtp/rtcp_packet.cpp
     src/rtp/rtcp_sender_thread.cpp
 
@@ -117,6 +119,8 @@ set(SOURCES
     src/signaling/ice_agent.cpp
     src/signaling/dtls_handshake.cpp
     src/signaling/srtp_session.cpp
+    src/signaling/webrtc_media_registry.cpp
+    src/signaling/webrtc_sender_thread.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

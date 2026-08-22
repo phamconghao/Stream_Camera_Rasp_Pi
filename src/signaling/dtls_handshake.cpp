@@ -14,6 +14,7 @@
 
 #include "dtls_cert.h"
 #include "srtp_session.h"
+#include "webrtc_media_registry.h"
 #include "log.h"
 
 static const char *TAG = "DTLS_HS";
@@ -216,6 +217,7 @@ void dtls_handshake_unregister_session(const std::string &ice_ufrag)
     }
 
     srtp_session_destroy(ice_ufrag); // no-op if srtp_session_create() was never reached/succeeded for this session
+    webrtc_media_registry_remove(ice_ufrag); // no-op if it was never added
 
     delete session;
     g_sessions.erase(it);
@@ -415,6 +417,16 @@ static void *handshake_thread_func(void *arg)
         // true - the handshake itself genuinely succeeded) - but this
         // session's traffic can't actually be encrypted/decrypted
         // until something retries srtp_session_create() for it.
+    }
+    else
+    {
+        // Phase 22.6.3: only mark this session "ready for media" once
+        // its SRTP context genuinely exists - webrtc_sender_thread.cpp
+        // (Phase 22.6.4) will start fanning real RTP out to it the
+        // moment this call returns, so doing this before
+        // srtp_session_create() succeeded would mean sends failing
+        // for a session this registry claims is ready.
+        webrtc_media_registry_add(session->ice_ufrag);
     }
 
     return nullptr;

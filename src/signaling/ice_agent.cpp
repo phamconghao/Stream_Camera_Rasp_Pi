@@ -35,6 +35,18 @@ static std::map<std::string, std::string> g_sessions; // ice_ufrag -> ice_pwd
 static pthread_mutex_t g_nominated_pairs_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<std::string, std::string> g_nominated_pairs; // "ip:port" -> ice_ufrag
 
+// PHASE 22.6.2: the reverse direction of the map above - populated at
+// the exact same moment (a STUN check succeeding), needed so
+// ice_agent_send_to_peer() can go from "which session" to "which
+// socket address" without scanning g_nominated_pairs for a matching
+// value every send. Deliberately a SEPARATE map rather than trying to
+// keep one bidirectional structure - both directions are looked up
+// far more often than they're written (once per successful STUN
+// check vs. every packet demuxed/sent), so the small duplication cost
+// is worth the simpler, more obviously-correct code on both sides.
+static pthread_mutex_t g_ufrag_to_addr_lock = PTHREAD_MUTEX_INITIALIZER;
+static std::map<std::string, struct sockaddr_in> g_ufrag_to_addr;
+
 static std::string make_addr_key(const std::string &ip, uint16_t port)
 {
     return ip + ":" + std::to_string(port);
@@ -73,6 +85,34 @@ void ice_agent_unregister_session(const std::string &ice_ufrag)
         }
     }
     pthread_mutex_unlock(&g_nominated_pairs_lock);
+
+    pthread_mutex_lock(&g_ufrag_to_addr_lock);
+    g_ufrag_to_addr.erase(ice_ufrag);
+    pthread_mutex_unlock(&g_ufrag_to_addr_lock);
+}
+
+// PHASE 22.6.2 implementation - see ice_agent.h's doc comment.
+bool ice_agent_send_to_peer(const std::string &ice_ufrag, const uint8_t *data, size_t size)
+{
+    pthread_mutex_lock(&g_ufrag_to_addr_lock);
+    auto it = g_ufrag_to_addr.find(ice_ufrag);
+    if (it == g_ufrag_to_addr.end())
+    {
+        pthread_mutex_unlock(&g_ufrag_to_addr_lock);
+        return false; // ICE hasn't nominated a pair for this session (yet, or ever)
+    }
+    struct sockaddr_in dest_addr = it->second;
+    pthread_mutex_unlock(&g_ufrag_to_addr_lock);
+
+    if (g_socket_fd < 0)
+    {
+        return false;
+    }
+
+    ssize_t sent = sendto(g_socket_fd, data, size, 0,
+                           reinterpret_cast<const struct sockaddr *>(&dest_addr), sizeof(dest_addr));
+
+    return sent >= 0;
 }
 
 // USERNAME on an incoming request is "<local_ufrag>:<remote_ufrag>"
@@ -343,6 +383,11 @@ static void *ice_agent_thread_func(void *arg)
         pthread_mutex_lock(&g_nominated_pairs_lock);
         g_nominated_pairs[addr_key] = local_ufrag;
         pthread_mutex_unlock(&g_nominated_pairs_lock);
+
+        // Phase 22.6.2: reverse-direction map, same nomination event.
+        pthread_mutex_lock(&g_ufrag_to_addr_lock);
+        g_ufrag_to_addr[local_ufrag] = sender_addr;
+        pthread_mutex_unlock(&g_ufrag_to_addr_lock);
     }
 
     LOG_INFO(TAG, "listener thread exit");

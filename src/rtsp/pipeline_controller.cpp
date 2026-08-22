@@ -12,6 +12,9 @@
 #include "rtp_packetizer_thread.h"
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
+#include "webrtc_rtp_packet_pool.h"
+#include "webrtc_rtp_packet_queue.h"
+#include "webrtc_sender_thread.h"
 #include "udp_sender_thread.h"
 #include "sps_pps_cache.h"
 #include "log.h"
@@ -34,6 +37,8 @@ int pipeline_controller_init(void)
     if (encoded_frame_queue_init() < 0) return -1;
     if (rtp_packet_pool_init() < 0) return -1;
     if (rtp_packet_queue_init() < 0) return -1;
+    if (webrtc_rtp_packet_pool_init() < 0) return -1;
+    if (webrtc_rtp_packet_queue_init() < 0) return -1;
     if (camera_capture_init() < 0) return -1;
     if (bcm2835_encoder_init(640, 480) < 0) return -1;
 
@@ -71,6 +76,7 @@ void pipeline_controller_ensure_running(void)
         camera_capture_start();
         rtp_packetizer_thread_start();
         udp_sender_thread_start();
+        webrtc_sender_thread_start(); // Phase 22.6.4 - harmless when idle (webrtc_rtp_packet_queue only ever receives packets once a WebRTC viewer is registered - see rtp_packetizer_thread.cpp's fan_out_to_webrtc()), started here rather than left always-on so it shares the exact same lifecycle as every other consumer of this pipeline's output
     }
     else
     {
@@ -107,6 +113,7 @@ void pipeline_controller_release(void)
         encoder_thread_stop();
         rtp_packetizer_thread_stop();
         udp_sender_thread_stop();
+        webrtc_sender_thread_stop();
     }
     else
     {
@@ -129,6 +136,7 @@ void pipeline_controller_cleanup(void)
         encoder_thread_stop();
         rtp_packetizer_thread_stop();
         udp_sender_thread_stop();
+        webrtc_sender_thread_stop();
         g_ref_count = 0;
     }
 
@@ -138,6 +146,8 @@ void pipeline_controller_cleanup(void)
     encoded_frame_pool_cleanup();
     rtp_packet_queue_cleanup();
     rtp_packet_pool_cleanup();
+    webrtc_rtp_packet_queue_cleanup();
+    webrtc_rtp_packet_pool_cleanup();
     raw_frame_queue_cleanup();
     raw_frame_pool_cleanup();
     bcm2835_encoder_cleanup();

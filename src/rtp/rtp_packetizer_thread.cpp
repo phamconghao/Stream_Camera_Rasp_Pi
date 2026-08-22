@@ -6,6 +6,9 @@
 #include "encoded_frame_queue.h"
 #include "rtp_packet_pool.h"
 #include "rtp_packet_queue.h"
+#include "webrtc_rtp_packet_pool.h"
+#include "webrtc_rtp_packet_queue.h"
+#include "webrtc_media_registry.h"
 #include "rtp_packetizer.h"
 #include "rtp_packetizer_thread.h"
 #include "h264_nal_parser.h"
@@ -75,6 +78,39 @@ static void stamp_packet(rtp_packet_t *packet, bool marker)
     packet->marker = marker;
 }
 
+// PHASE 22.6.1: mirrors `packet` (already stamped + packetized for
+// the RTSP path above) into the separate WebRTC pool/queue, as a
+// plain memcpy'd copy - see webrtc_rtp_packet_pool.h for why this
+// can't just be a second reference to the SAME rtp_packet_t. Gated on
+// webrtc_media_registry_has_any() so this module does zero extra work
+// (no acquire, no copy, no push) on every single packet when no
+// WebRTC viewer is currently connected - the overwhelmingly common
+// case for most of this project's runtime.
+static void fan_out_to_webrtc(const rtp_packet_t *packet)
+{
+    if (!webrtc_media_registry_has_any())
+    {
+        return;
+    }
+
+    rtp_packet_t *copy = webrtc_rtp_packet_pool_acquire();
+    if (!copy)
+    {
+        // Pool exhausted - same "drop rather than block" policy as
+        // the RTSP path's own pool exhaustion handling above.
+        LOG_WARN(TAG, "WebRTC RTP packet pool empty, dropping for WebRTC viewers");
+        return;
+    }
+
+    *copy = *packet; // rtp_packet_t is a plain-old-data struct (fixed-size array member, no pointers) - safe to copy by value
+
+    if (webrtc_rtp_packet_queue_push(copy) < 0)
+    {
+        LOG_WARN(TAG, "WebRTC RTP packet queue full, dropping for WebRTC viewers");
+        webrtc_rtp_packet_pool_release(copy);
+    }
+}
+
 // Acquires one packet, packs+stamps it, and pushes it into
 // rtp_packet_queue, releasing it back to the pool on any failure along
 // the way. Shared by both the single-NAL and FU-A paths below.
@@ -107,6 +143,16 @@ static void emit_single_nal_packet(const h264_nal_t *nal)
              packet->timestamp,
              packet->marker ? 1 : 0,
              packet->size - RTP_HEADER_SIZE);
+
+    // Phase 22.6.1: copy for the WebRTC path BEFORE handing this
+    // packet to the RTSP queue below - once rtp_packet_queue_push()
+    // returns, udp_sender_thread could concurrently pop, send, and
+    // release this same pool slot (rtp_packet_pool_release() doesn't
+    // clear memory, only marks the slot free for reacquisition) at
+    // any point after that, making a later read of `packet` here a
+    // race. Right now, before the push, this thread is still the
+    // packet's sole owner.
+    fan_out_to_webrtc(packet);
 
     if (rtp_packet_queue_push(packet) < 0)
     {
@@ -157,6 +203,10 @@ static void emit_fu_a_packets(const h264_nal_t *nal)
                  packet->marker ? 1 : 0,
                  frag + 1, fragment_count,
                  packet->size - RTP_HEADER_SIZE);
+
+        // Phase 22.6.1: see the single-NAL path's identical comment
+        // above - must copy before handing off to the RTSP queue, not after.
+        fan_out_to_webrtc(packet);
 
         if (rtp_packet_queue_push(packet) < 0)
         {

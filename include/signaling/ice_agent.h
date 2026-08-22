@@ -2,6 +2,7 @@
 #define __ICE_AGENT_H__
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 
 /**
@@ -46,5 +47,18 @@ void ice_agent_register_session(const std::string &ice_ufrag, const std::string 
 // have a session-teardown path yet (that's implicit in Phase 22.4+
 // once a full peer connection lifecycle exists).
 void ice_agent_unregister_session(const std::string &ice_ufrag);
+
+// PHASE 22.6.2: sends raw bytes to the address this session's ICE
+// connectivity check nominated (see ice_agent.cpp's g_nominated_pairs -
+// the reverse of that map, ufrag -> address, populated at the same
+// moment a STUN check first succeeds). Used by webrtc_sender_thread.cpp
+// (Phase 22.6.4) to deliver SRTP-encrypted RTP - this project's
+// existing STUN responder logic and this new send path share the
+// exact same UDP socket, which is what makes a single ICE-nominated
+// address usable for media in the first place (RFC 8445's whole point:
+// the pair that passed connectivity checks IS the media path).
+// Returns false if no address has been nominated for this ufrag yet
+// (ICE hasn't completed) or the sendto() itself failed.
+bool ice_agent_send_to_peer(const std::string &ice_ufrag, const uint8_t *data, size_t size);
 
 #endif // __ICE_AGENT_H__
