@@ -42,9 +42,18 @@ pkg_check_modules(
 #
 pkg_check_modules(
     LIBSRTP2
-    REQUIRED
+    QUIET
     libsrtp2
 )
+
+if(NOT LIBSRTP2_FOUND)
+    message(FATAL_ERROR
+        "libsrtp2 development files are required to build camera_app.\n"
+        "On Raspberry Pi OS/Debian install them with:\n"
+        "  sudo apt update && sudo apt install -y libsrtp2-dev\n"
+        "Then rerun ./build.sh."
+    )
+endif()
 
 #
 # Include directories
