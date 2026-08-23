@@ -36,10 +36,10 @@
  * SCOPE: gets a DTLS session to "connected" and verifies the peer's
  * certificate fingerprint against what the SDP offer promised
  * (Phase 22.2.2's parsed fingerprint - the actual MITM-prevention
- * mechanism here, see dtls_cert.h). Exporting/using the resulting
- * SRTP keying material to actually encrypt/decrypt RTP is Phase 22.5,
- * not this phase - dtls_handshake_get_srtp_keying_material() exists
- * ready for that, but nothing calls it yet.
+ * mechanism here, see dtls_cert.h), then immediately hands the
+ * exported SRTP keying material to srtp_session_create() (Phase
+ * 22.5.3) - see the end of handshake_thread_func() in
+ * dtls_handshake.cpp.
  */
 
 // Builds the ONE shared SSL_CTX every session's SSL* is created from
@@ -89,14 +89,5 @@ void dtls_handshake_on_packet(
 // project can trust the channel. False for "still handshaking",
 // "failed/timed out", or "no such session".
 bool dtls_handshake_is_connected(const std::string &ice_ufrag);
-
-// Phase 22.5 prep: once dtls_handshake_is_connected() is true, this
-// returns the SRTP keying material exported from the completed DTLS
-// session via SSL_export_keying_material() (RFC 5764 section 4.2,
-// label "EXTRACTOR-dtls_srtp") - the raw bytes SRTP's key derivation
-// (not implemented until Phase 22.5) turns into actual AES-CM keys
-// and salts for both directions. Returns false (leaving `out` alone)
-// if the session isn't connected yet or doesn't exist.
-bool dtls_handshake_get_srtp_keying_material(const std::string &ice_ufrag, std::vector<uint8_t> &out);
 
 #endif // __DTLS_HANDSHAKE_H__

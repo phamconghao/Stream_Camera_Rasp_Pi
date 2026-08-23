@@ -535,17 +535,3 @@ bool dtls_handshake_is_connected(const std::string &ice_ufrag)
 
     return it->second->connected;
 }
-
-bool dtls_handshake_get_srtp_keying_material(const std::string &ice_ufrag, std::vector<uint8_t> &out)
-{
-    std::lock_guard<std::mutex> lock(g_sessions_lock);
-
-    auto it = g_sessions.find(ice_ufrag);
-    if (it == g_sessions.end() || !it->second->connected)
-    {
-        return false;
-    }
-
-    out = it->second->srtp_keying_material;
-    return true;
-}

@@ -43,9 +43,8 @@ void ice_agent_register_session(const std::string &ice_ufrag, const std::string 
 
 // Removed once a session ends (mirrors the pattern rtsp_session_registry.h
 // and udp_sender.h's per-session add/remove calls use elsewhere in
-// this project) - not yet called anywhere, since Phase 22.3 doesn't
-// have a session-teardown path yet (that's implicit in Phase 22.4+
-// once a full peer connection lifecycle exists).
+// this project) - called from main.cpp's on_signaling_disconnect()
+// (Phase 22.6.5), the signaling-WebSocket-closed session-teardown path.
 void ice_agent_unregister_session(const std::string &ice_ufrag);
 
 // PHASE 22.6.2: sends raw bytes to the address this session's ICE

@@ -15,16 +15,17 @@
  * parallel to how rtsp_session_registry.h's PLAYING sessions serve
  * that role for Phase 20's RTSP fan-out.
  *
- * SCOPE NOTE (Phase 22.6.1-22.6.4, not yet 22.6.5): only the ADD side
- * is wired up so far (dtls_handshake.cpp calls
+ * Both ADD and REMOVE are wired up: dtls_handshake.cpp calls
  * webrtc_media_registry_add() right after a session's SRTP context is
- * created). Nothing calls webrtc_media_registry_remove() yet - that
- * requires detecting a WebRTC session ending (ICE failure, signaling
- * WebSocket closing, etc.), which is explicitly Phase 22.6.5's job
- * (lazy pipeline start/stop, symmetric with RTSP's PLAY/TEARDOWN).
- * Until 22.6.5 lands, a session that disconnects stays in this
- * registry - harmless for now (its socket address is stale, so sends
- * to it just silently fail/go nowhere), but not a permanent design.
+ * created, and webrtc_media_registry_remove() from BOTH
+ * dtls_handshake_unregister_session() (Phase 22.6.5's session-end
+ * path - see signaling_server.h's disconnect handler and main.cpp's
+ * on_signaling_disconnect()) and dtls_handshake_cleanup() (process
+ * shutdown). The one documented gap (see signaling_server.h): an
+ * ICE-level failure/timeout that leaves the signaling WebSocket open
+ * isn't currently detected, so that specific case wouldn't trigger a
+ * remove - everything else (browser closes the tab, navigates away,
+ * or the signaling connection drops) does.
  */
 
 void webrtc_media_registry_add(const std::string &ice_ufrag);

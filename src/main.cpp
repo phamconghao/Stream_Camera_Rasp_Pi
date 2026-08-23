@@ -303,7 +303,6 @@ static void on_signaling_message(const std::string &client_id, const std::string
         // STUN request's UDP source address rather than needing to
         // know the browser's candidates in advance. Logged so the
         // exchange itself can still be observed/debugged.
-        // end-to-end independent of ICE/DTLS not existing yet.
         LOG_INFO("MAIN", "signaling message from client %s: type=%s (not yet handled)", client_id.c_str(), type.c_str());
     }
 }
