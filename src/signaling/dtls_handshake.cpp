@@ -15,6 +15,7 @@
 #include "dtls_cert.h"
 #include "srtp_session.h"
 #include "webrtc_media_registry.h"
+#include "pipeline_controller.h"
 #include "log.h"
 
 static const char *TAG = "DTLS_HS";
@@ -77,6 +78,14 @@ struct dtls_session_t
     std::atomic<bool> failed{false};
 
     std::vector<uint8_t> srtp_keying_material;
+
+    // PHASE 22.6.5: true once this session bumped pipeline_controller's
+    // ref-count (see the end of handshake_thread_func()) - lets
+    // teardown release EXACTLY the sessions that actually took a ref,
+    // symmetric with RTSP's own PLAYING-state check in rtsp_server.cpp,
+    // so a session that failed/disconnected before ever reaching
+    // "media ready" doesn't underflow the ref-count on cleanup.
+    bool media_pipeline_ref_taken = false;
 };
 
 static SSL_CTX *g_ssl_ctx = nullptr;
@@ -163,6 +172,11 @@ void dtls_handshake_cleanup(void)
 
         srtp_session_destroy(pair.first);
 
+        if (session->media_pipeline_ref_taken)
+        {
+            pipeline_controller_release();
+        }
+
         delete session;
     }
 
@@ -218,6 +232,11 @@ void dtls_handshake_unregister_session(const std::string &ice_ufrag)
 
     srtp_session_destroy(ice_ufrag); // no-op if srtp_session_create() was never reached/succeeded for this session
     webrtc_media_registry_remove(ice_ufrag); // no-op if it was never added
+
+    if (session->media_pipeline_ref_taken)
+    {
+        pipeline_controller_release();
+    }
 
     delete session;
     g_sessions.erase(it);
@@ -427,6 +446,19 @@ static void *handshake_thread_func(void *arg)
         // srtp_session_create() succeeded would mean sends failing
         // for a session this registry claims is ready.
         webrtc_media_registry_add(session->ice_ufrag);
+
+        // Phase 22.6.5: keep the camera/encoder/packetizer pipeline
+        // running for as long as this WebRTC session is receiving
+        // media - symmetric with how rtsp_server.cpp's handle_play()
+        // does the same ensure_running() call on a RTSP session's
+        // READY->PLAYING transition. Without this, the pipeline would
+        // only happen to be running if some OTHER viewer (RTSP or
+        // another WebRTC session) is also active, or during the brief
+        // DESCRIBE/offer-time "borrow" window (see main.cpp's
+        // handle_offer()) - neither of which is guaranteed for the
+        // lifetime of an actual WebRTC viewing session.
+        pipeline_controller_ensure_running();
+        session->media_pipeline_ref_taken = true;
     }
 
     return nullptr;

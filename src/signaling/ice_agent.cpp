@@ -13,6 +13,7 @@
 #include "stun_message.h"
 #include "dtls_handshake.h"
 #include "srtp_session.h"
+#include "bcm2835_encoder.h"
 #include "log.h"
 
 static const char *TAG = "ICE_AGENT";
@@ -212,6 +213,31 @@ static const char *describe_rtcp_feedback(const uint8_t *data, size_t size)
     return "(not RTPFB/PSFB - other RTCP packet type)";
 }
 
+// PHASE 22.6.6: PLI (RFC 4585 section 6.3.1) and FIR (RFC 5104
+// section 4.3.1) are both explicit "I cannot decode without a fresh
+// keyframe" requests from the browser - unlike generic NACK (RFC 4585
+// section 6.2.1), which asks for specific lost PACKETS to be
+// retransmitted, not a whole new keyframe. This project has no
+// retransmission buffer to satisfy a NACK from (Phase 20's fan-out
+// only ever sends forward, never replays old packets - same
+// real-time-over-reliability bias documented in roadmap.md), so PLI/
+// FIR are the only two feedback types this project can meaningfully
+// act on: force the encoder to produce an IDR frame, exactly what
+// control_listener_thread.cpp's CONTROL_MSG_KEYFRAME_REQUEST path
+// already does for the RTSP/legacy control-channel case.
+static bool is_keyframe_request(const uint8_t *data, size_t size)
+{
+    if (size < 2)
+    {
+        return false;
+    }
+
+    uint8_t fmt = data[0] & 0x1F;
+    uint8_t payload_type = data[1];
+
+    return (payload_type == 206) && (fmt == 1 || fmt == 4); // PSFB + (PLI or FIR)
+}
+
 static void *ice_agent_thread_func(void *arg)
 {
     (void)arg;
@@ -321,13 +347,20 @@ static void *ice_agent_thread_func(void *arg)
             LOG_INFO(TAG, "SRTCP feedback from %s:%u (ufrag=%s): %s",
                      sender_ip, sender_port, ufrag.c_str(), describe_rtcp_feedback(buffer, static_cast<size_t>(len)));
 
-            // NOT wired to actually DO anything about NACK/PLI yet
-            // (e.g. triggering bcm2835_encoder's force-keyframe path
-            // the way control_listener_thread.h's UDP control channel
-            // already does for the RTSP path) - that's Phase 22.6's
-            // "end to end integration" job, same scope boundary as
-            // srtp_session_protect_rtp() not being called with real
-            // camera RTP yet (see srtp_session.h's header comment).
+            // Phase 22.6.6: PLI/FIR actually force a keyframe now -
+            // see is_keyframe_request()'s comment for why NACK is
+            // deliberately excluded (this project has nothing to
+            // retransmit in response to one). This affects the SAME
+            // shared hardware encoder every viewer (RTSP AND every
+            // other WebRTC session) pulls frames from - one WebRTC
+            // viewer's PLI benefits everyone currently watching, same
+            // as a keyframe requested via the legacy RTSP control
+            // channel already does.
+            if (is_keyframe_request(buffer, static_cast<size_t>(len)))
+            {
+                LOG_INFO(TAG, "keyframe requested via SRTCP feedback (ufrag=%s) - forcing IDR on next frame", ufrag.c_str());
+                bcm2835_encoder_force_keyframe();
+            }
 
             continue;
         }

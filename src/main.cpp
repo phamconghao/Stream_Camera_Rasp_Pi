@@ -20,6 +20,9 @@
 #include "json_lite.h"
 #include "log.h"
 
+#include <map>
+#include <mutex>
+
 /**
  * ============================================================================
  * FULL PIPELINE MAP (see individual files for per-stage detail comments)
@@ -117,6 +120,46 @@ static constexpr int OFFER_PRIME_WAIT_STEP_MS = 50;
 // are told apart by ice_ufrag, not by port - see ice_agent.h).
 static constexpr uint16_t ICE_AGENT_PORT = 40000;
 
+// PHASE 22.6.5: which ice_ufrag a given signaling client_id's WebRTC
+// session is - the only link this project has between "a WebSocket
+// connection closed" (signaling_server.h's disconnect handler, keyed
+// by client_id) and "which ICE/DTLS/SRTP/media session to tear down"
+// (everything else in this file is keyed by ice_ufrag instead, since
+// that's what's shared with the browser over signaling and used
+// throughout ice_agent.cpp/dtls_handshake.cpp). A simple mutex-guarded
+// map, same pattern as every other small registry in this project.
+static std::mutex g_client_ufrag_lock;
+static std::map<std::string, std::string> g_client_to_ufrag;
+
+// Called when a signaling WebSocket disconnects (Phase 22.6.5) - the
+// only WebRTC session-end signal this project currently detects (see
+// signaling_server.h's disconnect handler doc comment for the known
+// limitation: an ICE-level failure/timeout with the WebSocket still
+// open isn't caught by this). Tears down everything that session's
+// resources touched - ICE, DTLS/SRTP (which itself releases the
+// pipeline ref-count taken in dtls_handshake.cpp, if any was taken),
+// and the client_id<->ufrag mapping itself.
+static void on_signaling_disconnect(const std::string &client_id)
+{
+    std::string ufrag;
+
+    {
+        std::lock_guard<std::mutex> lock(g_client_ufrag_lock);
+        auto it = g_client_to_ufrag.find(client_id);
+        if (it == g_client_to_ufrag.end())
+        {
+            return; // this client never completed an offer (e.g. connected then disconnected immediately) - nothing to tear down
+        }
+        ufrag = it->second;
+        g_client_to_ufrag.erase(it);
+    }
+
+    LOG_INFO("MAIN", "client %s disconnected - tearing down WebRTC session ufrag=%s", client_id.c_str(), ufrag.c_str());
+
+    ice_agent_unregister_session(ufrag);
+    dtls_handshake_unregister_session(ufrag); // also releases the pipeline ref-count if this session had reached "media ready" (see dtls_handshake.cpp)
+}
+
 // Phase 22.2.6: dispatches a parsed "offer" message to the SDP answer
 // builder (webrtc_sdp.h) and sends the "answer" back over the same
 // signaling connection. ICE (22.3) and DTLS (22.4) haven't run yet at
@@ -186,6 +229,14 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     // needs to know which certificate fingerprint to expect from the
     // browser - straight from the offer this project just parsed.
     dtls_handshake_register_session(ice.ufrag, offer.fingerprint_algo, offer.fingerprint_hex);
+
+    // Phase 22.6.5: remember which ufrag belongs to this signaling
+    // client_id, so on_signaling_disconnect() can find it later when
+    // this client's WebSocket closes.
+    {
+        std::lock_guard<std::mutex> lock(g_client_ufrag_lock);
+        g_client_to_ufrag[client_id] = ice.ufrag;
+    }
 
     LOG_INFO("MAIN", "sending answer to client %s (ice-ufrag=%s)", client_id.c_str(), ice.ufrag.c_str());
 
@@ -329,6 +380,8 @@ int main(int argc, char **argv)
     {
         return -1;
     }
+
+    signaling_server_set_disconnect_handler(on_signaling_disconnect);
 
     if (signaling_server_start(signaling_port, on_signaling_message) < 0)
     {

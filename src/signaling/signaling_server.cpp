@@ -27,6 +27,7 @@ static int g_listen_fd = -1;
 static pthread_t g_accept_thread;
 static std::atomic<bool> g_running(false);
 static signaling_message_handler_t g_handler;
+static signaling_disconnect_handler_t g_disconnect_handler;
 
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<std::string, int> g_clients; // client_id -> fd, for signaling_server_send()
@@ -447,6 +448,10 @@ static void *connection_thread_func(void *arg)
                     unregister_client(client_id);
                     close(fd);
                     LOG_INFO(TAG, "client %s closed connection", client_id.c_str());
+                    if (g_disconnect_handler)
+                    {
+                        g_disconnect_handler(client_id);
+                    }
                     return nullptr;
 
                 default:
@@ -468,6 +473,11 @@ static void *connection_thread_func(void *arg)
     unregister_client(client_id);
     close(fd);
     LOG_INFO(TAG, "client %s disconnected", client_id.c_str());
+
+    if (g_disconnect_handler)
+    {
+        g_disconnect_handler(client_id);
+    }
 
     return nullptr;
 }
@@ -514,6 +524,11 @@ static void *accept_thread_func(void *arg)
 
     LOG_INFO(TAG, "accept thread exit");
     return nullptr;
+}
+
+void signaling_server_set_disconnect_handler(signaling_disconnect_handler_t handler)
+{
+    g_disconnect_handler = handler;
 }
 
 int signaling_server_start(uint16_t port, signaling_message_handler_t handler)

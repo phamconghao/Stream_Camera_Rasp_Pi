@@ -41,8 +41,29 @@
 // interpret message content).
 using signaling_message_handler_t = std::function<void(const std::string &client_id, const std::string &raw_json)>;
 
+// PHASE 22.6.5: called once when a client's WebSocket connection
+// closes (browser tab closed, navigated away, or the connection just
+// dropped) - client_id is the SAME id that was ever passed to the
+// message handler above, so a caller that tracked "this client_id is
+// running WebRTC session X" (main.cpp does, keyed by ice_ufrag) can
+// tear that session down here. This is currently this project's ONLY
+// WebRTC session-end signal (see roadmap.md's Phase 22.6 notes) -
+// ICE-level failure/timeout detection isn't implemented, so a peer
+// that goes silent without its WebSocket also closing (e.g. the
+// signaling connection outlives a dead media path) won't be caught by
+// this alone.
+using signaling_disconnect_handler_t = std::function<void(const std::string &client_id)>;
+
 int signaling_server_start(uint16_t port, signaling_message_handler_t handler);
 void signaling_server_stop(void);
+
+// Registers the disconnect callback - optional; if never called, this
+// project just doesn't get notified of disconnects (same as before
+// Phase 22.6.5). Must be called before signaling_server_start() to
+// guarantee no disconnect is ever missed at startup, though in
+// practice a disconnect can't happen before any client has connected
+// in the first place.
+void signaling_server_set_disconnect_handler(signaling_disconnect_handler_t handler);
 
 // Sends a text frame containing `json` to the client identified by
 // client_id. Returns false if that client_id isn't currently
