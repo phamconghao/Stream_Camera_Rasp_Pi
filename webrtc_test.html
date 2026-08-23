@@ -102,9 +102,14 @@
       <div id="check-setremote">⬜ setRemoteDescription(answer) chấp nhận (SDP hợp lệ với Chrome)</div>
       <div id="check-icecandidate">⬜ Nhận + addIceCandidate() candidate từ Pi</div>
       <div id="check-iceconnect">⬜ ICE connection state = connected/completed (STUN connectivity check thành công)</div>
-      <div id="check-dtlsconnect">⬜ RTCPeerConnection.connectionState = connected (DTLS handshake hoàn tất - Phase 22.4)</div>
+      <div id="check-dtlsconnect">⬜ RTCPeerConnection.connectionState = connected (DTLS handshake hoàn tất)</div>
+      <div id="check-video">⬜ Nhận video track (ontrack)</div>
     </div>
   </div>
+
+  <div class="card">
+    <h2>Video</h2>
+    <video id="remoteVideo" autoplay playsinline controls style="width:100%; border-radius:8px; background:#000;"></video>
 
   <div class="card">
     <h2>SDP Offer (trình duyệt tạo)</h2>
@@ -194,6 +199,17 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
     // a=sendonly in the answer) ---
     pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN server needed - this project's ICE is host-candidate-only, see roadmap.md
     pc.addTransceiver('video', { direction: 'recvonly' });
+
+    // Attaches the incoming video track to the <video> element the
+    // moment it arrives - this is what actually shows the picture,
+    // separate from all the checklist items above which only confirm
+    // the connection itself succeeded.
+    pc.ontrack = (event) => {
+      log(`Received remote track: kind=${event.track.kind}`);
+      const videoEl = document.getElementById('remoteVideo');
+      videoEl.srcObject = event.streams[0];
+      setCheck('check-video', true, `kind=${event.track.kind}`);
+    };
 
     // Phase 22.3.3: forward every local candidate Chrome gathers to
     // the signaling server as its own ice-candidate message - the
@@ -316,7 +332,7 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
     await Promise.race([dtlsConnectedPromise, dtlsTimeoutPromise]);
 
     setCheck('check-dtlsconnect', true, `connectionState=${pc.connectionState}`);
-    connStatus.textContent = 'Hoàn tất! ICE + DTLS đều đã kết nối. (SRTP/media - Phase 22.5 - chưa thử ở đây)';
+    connStatus.textContent = 'Hoàn tất! ICE + DTLS đều đã kết nối, đang chờ video track...';
 
   } catch (err) {
     log('ERROR: ' + err.message);
@@ -325,7 +341,7 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
 
     // Mark whichever check was in-flight as failed, based on what we
     // know already succeeded.
-    const order = ['check-ws', 'check-offer', 'check-send', 'check-answer', 'check-setremote', 'check-icecandidate', 'check-iceconnect', 'check-dtlsconnect'];
+    const order = ['check-ws', 'check-offer', 'check-send', 'check-answer', 'check-setremote', 'check-icecandidate', 'check-iceconnect', 'check-dtlsconnect', 'check-video'];
     for (const id of order) {
       if (!document.getElementById(id).textContent.includes('✅')) {
         setCheck(id, false, err.message);
