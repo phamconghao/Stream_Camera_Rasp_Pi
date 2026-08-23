@@ -341,6 +341,20 @@ void camera_capture_stop(void)
     std::cout << "[STOP] begin" << std::endl;
     g_capture_running = false;
     g_camera->stop();
+
+    // Camera::stop() synchronously cancels every in-flight Request, but
+    // does not reset them to a re-queueable state. request_complete()
+    // never gets to call request->reuse() for these, since it bails out
+    // immediately when g_capture_running is false (set above, before
+    // stop()). Without this loop, the next camera_capture_start() would
+    // queueRequest() these still-cancelled Requests directly, which
+    // libcamera rejects as invalid ("Request is not valid") for every
+    // single one - silently breaking capture until the process restarts.
+    for (auto &request : g_requests)
+    {
+        request->reuse(Request::ReuseBuffers);
+    }
+
     std::cout << "[STOP] end" << std::endl;
 }
 
