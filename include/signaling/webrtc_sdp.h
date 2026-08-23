@@ -6,23 +6,18 @@
 #include <vector>
 
 /**
- * PHASE 22.2 (WebRTC-compatible SDP) - part 1/2 (this file: types +
- * parser declarations; the answer builder is part 2, not in this
- * file yet).
- *
- * Deliberately NOT the same struct/parser as rtsp/rtsp_message.h's
- * SDP handling from Phase 20 - WebRTC's offer/answer carries a
- * different set of attributes (ICE credentials, a DTLS fingerprint,
- * RTCP feedback types) that plain RTSP/RTP SDP never needed. Only
- * `sprop-parameter-sets`/SPS-PPS handling (parser/sps_pps_cache.h,
- * common/base64.h) is shared between the two.
+ * SDP offer parsing and answer building for WebRTC. Separate from
+ * rtsp/rtsp_message.h's SDP handling - WebRTC's offer/answer carries a
+ * different set of attributes (ICE credentials, DTLS fingerprint,
+ * RTCP feedback types) than plain RTSP/RTP SDP. Only sprop-parameter-
+ * sets/SPS-PPS handling (parser/sps_pps_cache.h, common/base64.h) is
+ * shared between the two.
  */
 
-// Fields pulled out of a browser's SDP offer that the answer-building
-// step (part 2/2) needs. Only WHAT this project's WebRTC path
-// actually reads - not a general-purpose SDP model. Anything not
-// listed here (audio m= lines, extra codecs, extmap, etc.) is
-// ignored by the parser, not an error.
+// Fields pulled out of a browser's SDP offer needed to build an
+// answer - not a general-purpose SDP model. Anything not listed here
+// (audio m= lines, extra codecs, extmap, etc.) is ignored by the
+// parser, not an error.
 struct webrtc_sdp_offer_t
 {
     std::string ice_ufrag;    // from "a=ice-ufrag:<value>"
@@ -32,47 +27,31 @@ struct webrtc_sdp_offer_t
     std::string mid;          // from the video m= section's "a=mid:<value>"
 
     // True once every field above required to build an answer was
-    // actually found in the offer - parse_webrtc_sdp_offer() sets
-    // this rather than the caller having to check each field for
-    // emptiness individually.
+    // actually found in the offer.
     bool valid = false;
 };
 
-// Parses a browser-generated SDP offer (as delivered over the
-// signaling WebSocket - see signaling/signaling_server.h) and
-// extracts the fields webrtc_sdp_offer_t needs. Malformed input or a
-// missing required attribute results in a struct with valid=false
-// rather than a thrown exception - same "fail soft, let the caller
-// decide what to do" convention as rtsp_message.h's rtsp_parse_request().
+// Parses a browser-generated SDP offer and extracts the fields
+// webrtc_sdp_offer_t needs. Malformed input or a missing required
+// attribute results in a struct with valid=false rather than a thrown
+// exception.
 webrtc_sdp_offer_t parse_webrtc_sdp_offer(const std::string &sdp);
 
 /**
- * PHASE 22.2 part 2/2: SDP answer builder.
+ * Builds the SDP answer sent back after parsing a browser's offer.
+ * Notable attributes:
+ *   - m=video ... UDP/TLS/RTP/SAVPF 96   (secure + feedback profile)
+ *   - a=ice-ufrag / a=ice-pwd            (this side's own ICE
+ *     credentials for this connection - see ice_credentials.h)
+ *   - a=fingerprint:sha-256 ...          (this side's DTLS cert
+ *     fingerprint - see dtls_cert.h)
+ *   - a=setup:passive                    (this side always waits for
+ *     the peer to initiate the DTLS handshake)
+ *   - a=rtcp-fb:96 nack / nack pli       (declares support for
+ *     loss-recovery feedback)
  *
- * Builds the SDP this project sends back after receiving+parsing a
- * browser's offer (parse_webrtc_sdp_offer() above). Distinct from
- * Phase 20 step 5's handle_describe() SDP in the attributes that
- * matter for WebRTC specifically:
- *   - m=video ... UDP/TLS/RTP/SAVPF 96   (Secure + feedback profile,
- *     not RTSP's plain "RTP/AVP")
- *   - a=ice-ufrag / a=ice-pwd            (this project's OWN ICE
- *     credentials for THIS connection - see ice_credentials.h -  not
- *     an echo of the offer's)
- *   - a=fingerprint:sha-256 ...          (this project's DTLS cert
- *     fingerprint - see dtls_cert.h - proves which cert will actually
- *     be used in the Phase 22.4 DTLS handshake)
- *   - a=setup:passive                    (this project always waits
- *     for the browser to initiate the DTLS handshake, never the other
- *     way around - simplest role split for an embedded device that's
- *     always the "server" side of the connection)
- *   - a=rtcp-fb:96 nack / nack pli       (declares support for the
- *     browser's loss-recovery feedback - Phase 22.6's job to actually
- *     act on it, this just advertises the capability)
- *
- * sprop-parameter-sets is built the exact same way as Phase 20 step
- * 5's handle_describe() (same sps_pps_cache.h + base64.h), just
- * copied into this different SDP shape rather than shared code, since
- * the two SDP builders diverge in almost everything else.
+ * sprop-parameter-sets is built the same way as the RTSP DESCRIBE
+ * path (sps_pps_cache.h + base64.h), just into a different SDP shape.
  */
 std::string build_webrtc_sdp_answer(
     const std::string &ice_ufrag,

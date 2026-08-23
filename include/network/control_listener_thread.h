@@ -9,7 +9,7 @@
  *
  * Binds a UDP socket on `control_port` and listens for control messages
  * sent by control_channel (receiver side, see network/control_channel.h):
- *   - keyframe request (Phase 18 recovery): forces an IDR on the next frame.
+ *   - keyframe request: forces an IDR on the next frame.
  *   - loss report (adaptive bitrate): maps the reported loss rate to a
  *     target bitrate tier and applies it live via V4L2, if it actually
  *     changed from the current tier.

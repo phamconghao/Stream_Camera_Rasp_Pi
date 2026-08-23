@@ -27,9 +27,9 @@ static constexpr const char *STATS_PATH = "sender_stats.json";
  * Bitrate tiers for the adaptive-bitrate extension. Deliberately coarse
  * (3 steps) and hysteresis-free simplicity over a smooth/continuous
  * curve: a real congestion-control algorithm (e.g. something GCC-like)
- * is a whole project on its own, and isn't what Phase 18/this idea is
- * about - the goal here is "visibly react to bad network conditions
- * within a couple seconds", not optimal rate-distortion tuning.
+ * is a whole project on its own - the goal here is "visibly react to
+ * bad network conditions within a couple seconds", not optimal
+ * rate-distortion tuning.
  */
 static constexpr uint32_t BITRATE_HIGH_BPS = 2000000; // loss < 1%
 static constexpr uint32_t BITRATE_MEDIUM_BPS = 1000000; // 1% <= loss < 5%
@@ -150,12 +150,12 @@ static void handle_loss_report(const control_loss_report_t *report)
 
 static void handle_rtcp_rr(const rtcp_rr_t *rr)
 {
-    // Phase 19: this project's bitrate adaptation still runs off the
-    // ad-hoc CONTROL_MSG_LOSS_REPORT above (Phase 18/Idea #1), not this
-    // standards-compliant RR - the two report similar information via
-    // different paths. Real RTCP is logged here for interoperability
-    // and observability value (a tool like Wireshark can decode it),
-    // not (yet) wired into any decision this sender makes.
+    // This project's bitrate adaptation still runs off the ad-hoc
+    // CONTROL_MSG_LOSS_REPORT above, not this standards-compliant
+    // RR - the two report similar information via different paths.
+    // Real RTCP is logged here for interoperability and observability
+    // value (a tool like Wireshark can decode it), not (yet) wired
+    // into any decision this sender makes.
     uint32_t frac_and_cum = ntohl(rr->block.fraction_lost_and_cumulative_be);
     uint8_t fraction = (frac_and_cum >> 24) & 0xFF;
     uint32_t cumulative = frac_and_cum & 0x00FFFFFF;

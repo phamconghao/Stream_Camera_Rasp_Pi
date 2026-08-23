@@ -23,9 +23,9 @@
  *      one, discard whatever access unit is mid-reassembly - a gap
  *      means the bitstream from here to the next access unit boundary
  *      is corrupt (see rtp_depacketizer_reset()) - and ask the sender
- *      for a fresh keyframe (Phase 18 recovery, see control_channel.h)
- *      so the decoder gets back a clean picture quickly instead of
- *      waiting for the next regularly-scheduled IDR.
+ *      for a fresh keyframe (see control_channel.h) so the decoder
+ *      gets back a clean picture quickly instead of waiting for the
+ *      next regularly-scheduled IDR.
  *   2. Lazily acquire an encoded_frame_t on the first packet of a new
  *      access unit.
  *   3. Feed the packet into rtp_depacketizer_process_packet(), which
@@ -76,13 +76,12 @@ static void *rtp_depacketizer_thread_func(void *arg)
                 current_au = nullptr;
             }
 
-            // Phase 18 recovery: rather than silently waiting for
-            // whatever the next regularly-scheduled IDR happens to be
-            // (which could be several seconds away), ask the sender to
-            // force one now. control_channel_request_keyframe() is
-            // internally rate-limited, so it's safe to call this on
-            // every single loss event without flooding the control
-            // channel.
+            // Rather than silently waiting for whatever the next
+            // regularly-scheduled IDR happens to be (which could be
+            // several seconds away), ask the sender to force one now.
+            // control_channel_request_keyframe() is internally
+            // rate-limited, so it's safe to call this on every single
+            // loss event without flooding the control channel.
             control_channel_request_keyframe();
         }
 

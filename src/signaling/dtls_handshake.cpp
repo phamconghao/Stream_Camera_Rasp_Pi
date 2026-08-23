@@ -21,8 +21,8 @@
 static const char *TAG = "DTLS_HS";
 
 // This project only ever needs ONE SRTP protection profile - the one
-// every major browser offers first/supports universally. Phase 22.5
-// will read back whichever profile actually got negotiated (via
+// every major browser offers first/supports universally. The SRTP
+// layer reads back whichever profile actually got negotiated (via
 // SSL_get_selected_srtp_profile()) rather than assuming this string
 // was necessarily what was picked, but offering just this one keeps
 // the negotiation trivial.
@@ -118,11 +118,10 @@ int dtls_handshake_init(void)
         return -1;
     }
 
-    // a=setup:passive in every SDP answer this project sends (Phase
-    // 22.2.5) means the browser always initiates the handshake and
-    // this project always responds - DTLS_server_method() above
-    // matches that; there is no client-role code path anywhere in
-    // this module.
+    // a=setup:passive in every SDP answer this project sends means
+    // the browser always initiates the handshake and this project
+    // always responds - DTLS_server_method() above matches that;
+    // there is no client-role code path anywhere in this module.
 
     if (SSL_CTX_use_certificate(g_ssl_ctx, dtls_cert_get_cert()) <= 0 ||
         SSL_CTX_use_PrivateKey(g_ssl_ctx, dtls_cert_get_pkey()) <= 0)
@@ -289,8 +288,8 @@ static void drain_and_send(dtls_session_t *session)
 // and handling DTLS's own retransmission timers, until the handshake
 // either completes or this project gives up (MAX_RETRANSMIT_ROUNDS of
 // silence). Exits immediately on success/failure - no ongoing
-// keepalive loop, since SRTP (Phase 22.5) is a separate concern that
-// doesn't need this thread once the handshake itself is done.
+// keepalive loop, since SRTP is a separate concern that doesn't need
+// this thread once the handshake itself is done.
 static void *handshake_thread_func(void *arg)
 {
     dtls_session_t *session = static_cast<dtls_session_t *>(arg);
@@ -398,11 +397,9 @@ static void *handshake_thread_func(void *arg)
         return nullptr;
     }
 
-    // Phase 22.5 prep: export the keying material now, while the
-    // handshake's cipher state is available, and cache it on the
-    // session - re-deriving it later would need the same SSL* anyway,
-    // so there's no reason to defer this to whenever Phase 22.5 first
-    // asks for it.
+    // Export the keying material now, while the handshake's cipher
+    // state is available, and cache it on the session - re-deriving
+    // it later would need the same SSL* anyway.
     session->srtp_keying_material.resize(SRTP_KEYING_MATERIAL_LEN);
     int export_ok = SSL_export_keying_material(
         session->ssl,
@@ -423,11 +420,9 @@ static void *handshake_thread_func(void *arg)
     LOG_INFO(TAG, "DTLS handshake COMPLETE for ufrag=%s - fingerprint verified, SRTP keying material exported",
              session->ice_ufrag.c_str());
 
-    // Phase 22.5.3: the keying material is only useful once turned
-    // into actual libsrtp2 contexts - do that immediately rather than
-    // waiting for something else to notice this session connected,
-    // since nothing else currently polls dtls_handshake_is_connected()
-    // for that purpose.
+    // The keying material is only useful once turned into actual
+    // libsrtp2 contexts - do that immediately rather than waiting for
+    // something else to notice this session connected.
     if (srtp_session_create(session->ice_ufrag, session->srtp_keying_material) < 0)
     {
         LOG_ERROR(TAG, "failed to create SRTP session for ufrag=%s despite a successful DTLS handshake",
@@ -439,24 +434,20 @@ static void *handshake_thread_func(void *arg)
     }
     else
     {
-        // Phase 22.6.3: only mark this session "ready for media" once
-        // its SRTP context genuinely exists - webrtc_sender_thread.cpp
-        // (Phase 22.6.4) will start fanning real RTP out to it the
-        // moment this call returns, so doing this before
-        // srtp_session_create() succeeded would mean sends failing
-        // for a session this registry claims is ready.
+        // Only mark this session "ready for media" once its SRTP
+        // context genuinely exists - webrtc_sender_thread.cpp will
+        // start fanning real RTP out to it the moment this call
+        // returns, so doing this before srtp_session_create()
+        // succeeded would mean sends failing for a session this
+        // registry claims is ready.
         webrtc_media_registry_add(session->ice_ufrag);
 
-        // Phase 22.6.5: keep the camera/encoder/packetizer pipeline
-        // running for as long as this WebRTC session is receiving
-        // media - symmetric with how rtsp_server.cpp's handle_play()
-        // does the same ensure_running() call on a RTSP session's
-        // READY->PLAYING transition. Without this, the pipeline would
-        // only happen to be running if some OTHER viewer (RTSP or
-        // another WebRTC session) is also active, or during the brief
-        // DESCRIBE/offer-time "borrow" window (see main.cpp's
-        // handle_offer()) - neither of which is guaranteed for the
-        // lifetime of an actual WebRTC viewing session.
+        // Keep the camera/encoder/packetizer pipeline running for as
+        // long as this WebRTC session is receiving media - symmetric
+        // with how rtsp_server.cpp's handle_play() does the same
+        // ensure_running() call on an RTSP session's READY->PLAYING
+        // transition. Without this, the pipeline would only happen to
+        // be running if some other viewer is also active.
         pipeline_controller_ensure_running();
         session->media_pipeline_ref_taken = true;
     }

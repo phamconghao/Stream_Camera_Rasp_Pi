@@ -20,10 +20,10 @@ int rtp_packetizer_thread_start(void);
 void rtp_packetizer_thread_stop(void);
 
 /**
- * Phase 19 (RTCP): exposes this stream's SSRC and its most recently
- * used RTP timestamp, so rtcp_sender_thread can build an SR packet
- * that correlates wall-clock (NTP) time with this stream's RTP
- * timeline, per RFC 3550 6.4.1.
+ * Exposes this stream's SSRC and its most recently used RTP
+ * timestamp, so rtcp_sender_thread can build an SR packet that
+ * correlates wall-clock (NTP) time with this stream's RTP timeline,
+ * per RFC 3550 6.4.1.
  */
 uint32_t rtp_packetizer_thread_get_ssrc(void);
 uint32_t rtp_packetizer_thread_get_last_timestamp(void);

@@ -39,8 +39,8 @@ static void *webrtc_sender_thread_func(void *arg)
 
     while (g_running)
     {
-        // Blocks until rtp_packetizer_thread pushes a packet (Phase
-        // 22.6.1's fan_out_to_webrtc()), or returns nullptr once
+        // Blocks until rtp_packetizer_thread pushes a packet via
+        // fan_out_to_webrtc(), or returns nullptr once
         // webrtc_rtp_packet_queue_shutdown() has been called.
         rtp_packet_t *packet = webrtc_rtp_packet_queue_pop();
         if (!packet)
@@ -53,25 +53,20 @@ static void *webrtc_sender_thread_func(void *arg)
         for (const std::string &ufrag : ufrags)
         {
             // Fresh copy per viewer: srtp_protect() encrypts in
-            // place, and every viewer has its own DTLS-derived keys
-            // (Phase 22.4/22.5) - the plaintext `packet` itself must
-            // stay untouched across iterations of this loop, or the
-            // 2nd/3rd/... viewer would be protecting an already-
-            // encrypted buffer instead of the original plaintext.
+            // place, and every viewer has its own DTLS-derived keys -
+            // the plaintext `packet` itself must stay untouched
+            // across iterations of this loop, or the 2nd/3rd/...
+            // viewer would be protecting an already-encrypted buffer
+            // instead of the original plaintext.
             memcpy(scratch, packet->data, packet->size);
             int len = static_cast<int>(packet->size);
 
             if (!srtp_session_protect_rtp(ufrag, scratch, sizeof(scratch), &len))
             {
                 // Not necessarily an error worth alarming about: this
-                // legitimately happens for the brief window between a
-                // viewer being added to webrtc_media_registry (Phase
-                // 22.6.3, right after SRTP session creation) - there
-                // shouldn't actually be a gap there since registry
-                // add happens after srtp_session_create() succeeds,
-                // but a session ending (once Phase 22.6.5 wires up
-                // removal) racing against this loop's snapshot of
-                // ufrags is a real, expected case once that lands.
+                // can legitimately happen for a session that's ending
+                // (its SRTP context torn down) racing against this
+                // loop's snapshot of ufrags.
                 continue;
             }
 

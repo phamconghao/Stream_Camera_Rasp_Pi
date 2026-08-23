@@ -35,21 +35,20 @@ static constexpr int REAPER_INTERVAL_SEC = 10;
 // for informational display / RTCP-port-guessing, not to actually
 // reach the server (the client already knows our IP from the TCP
 // connection it DESCRIBEd/SETUP'd over). NOT the real source port RTP
-// packets go out from: since Phase 20 step 4, udp_sender.cpp sends
-// every session's RTP through ONE shared UDP socket whose source port
-// is whatever the OS happened to assign it at bind time, not this
-// fixed value - fixing that would mean plumbing the real ephemeral
-// port out of udp_sender.cpp into here, which isn't worth it unless a
-// real client is ever seen relying on server_port being accurate.
+// packets go out from: udp_sender.cpp sends every session's RTP
+// through ONE shared UDP socket whose source port is whatever the OS
+// happened to assign it at bind time, not this fixed value - fixing
+// that would mean plumbing the real ephemeral port out of
+// udp_sender.cpp into here, which isn't worth it unless a real client
+// is ever seen relying on server_port being accurate.
 static constexpr uint16_t PLACEHOLDER_SERVER_RTP_PORT = 5004;
 static constexpr uint16_t PLACEHOLDER_SERVER_RTCP_PORT = 5005;
 
-// Phase 20 step 5 (part 3/4): how long handle_describe() waits for a
-// freshly-primed pipeline (see below) to produce its first SPS/PPS
-// before giving up. 1s is generous for one encoded frame at any
-// reasonable framerate/resolution this project targets - see
-// pipeline_controller.h for the ensure_running()/release() pair this
-// priming reuses.
+// How long handle_describe() waits for a freshly-primed pipeline (see
+// below) to produce its first SPS/PPS before giving up. 1s is generous
+// for one encoded frame at any reasonable framerate/resolution this
+// project targets - see pipeline_controller.h for the
+// ensure_running()/release() pair this priming reuses.
 static constexpr int DESCRIBE_PRIME_MAX_WAIT_ITERATIONS = 20;
 static constexpr int DESCRIBE_PRIME_WAIT_STEP_MS = 50;
 
@@ -124,15 +123,15 @@ static rtsp_response_t handle_describe(const rtsp_request_t &req)
     (void)req;
     rtsp_response_t resp;
 
-    // Phase 20 step 5 (part 3/4): SPS/PPS aren't known until the
-    // hardware encoder has actually produced at least one access unit
-    // (see sps_pps_cache.h) - but DESCRIBE is normally the very FIRST
-    // request of an RTSP session, sent before any SETUP/PLAY, so on a
-    // freshly-started server nobody has primed the cache yet. Borrow a
-    // pipeline "viewer slot" via the same ref-counted
-    // ensure_running()/release() pair handle_play()/handle_teardown()
-    // use, just long enough for one frame to come through. If a real
-    // viewer is concurrently PLAYing (or starts PLAYing while this
+    // SPS/PPS aren't known until the hardware encoder has actually
+    // produced at least one access unit (see sps_pps_cache.h) - but
+    // DESCRIBE is normally the very first request of an RTSP session,
+    // sent before any SETUP/PLAY, so on a freshly-started server
+    // nobody has primed the cache yet. Borrow a pipeline "viewer slot"
+    // via the same ref-counted ensure_running()/release() pair
+    // handle_play()/handle_teardown() use, just long enough for one
+    // frame to come through. If a real viewer is concurrently PLAYing
+    // (or starts PLAYing while this
     // DESCRIBE is waiting), their own ref-count entry keeps the
     // pipeline running regardless of what this call does - priming
     // never stops a pipeline someone else still needs, and releasing

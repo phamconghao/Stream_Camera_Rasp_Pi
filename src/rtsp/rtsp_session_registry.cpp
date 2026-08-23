@@ -134,7 +134,7 @@ bool rtsp_session_registry_get_state(const std::string &session_id, rtsp_session
 
 // Full-record lookup - used e.g. by handle_play() (rtsp_server.cpp)
 // to get client_ip/client_rtp_port for registering this session's RTP
-// destination with udp_sender (Phase 20 step 4's fan-out).
+// destination with udp_sender's fan-out.
 bool rtsp_session_registry_get(const std::string &session_id, rtsp_session_t *out_session)
 {
     pthread_mutex_lock(&g_lock);

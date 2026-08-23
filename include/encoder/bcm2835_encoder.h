@@ -28,23 +28,22 @@ int bcm2835_encoder_encode_file(const char *input_file, const char *output_file)
 int bcm2835_encoder_encode_frame(raw_frame_t *raw, encoded_frame_t *encoded);
 
 /**
- * Phase 18 (packet loss recovery): forces the NEXT encoded frame to be
- * an IDR/keyframe, via the V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME control.
- * Safe to call from a different thread than the one calling
- * bcm2835_encoder_encode_frame() - see keyframe_listener_thread.cpp,
- * which calls this when the receiver signals it lost packets and needs
- * a fresh keyframe to recover instead of waiting for the next
- * regularly-scheduled one. Returns 0 on success, -1 on ioctl failure.
+ * Forces the NEXT encoded frame to be an IDR/keyframe, via the
+ * V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME control. Safe to call from a
+ * different thread than the one calling bcm2835_encoder_encode_frame() -
+ * used when a receiver signals lost packets and needs a fresh keyframe
+ * to recover instead of waiting for the next regularly-scheduled one.
+ * Returns 0 on success, -1 on ioctl failure.
  */
 int bcm2835_encoder_force_keyframe(void);
 
 /**
- * Idea #1 (adaptive bitrate): changes the encoder's target bitrate live,
- * via V4L2_CID_MPEG_VIDEO_BITRATE. Called by control_listener_thread
- * when the receiver reports a loss rate (see network/control_listener_thread.h)
- * high enough to warrant backing off, or low enough to step back up.
- * Safe to call from a different thread than bcm2835_encoder_encode_frame(),
- * same reasoning as bcm2835_encoder_force_keyframe(). Returns 0/-1.
+ * Changes the encoder's target bitrate live, via
+ * V4L2_CID_MPEG_VIDEO_BITRATE. Called when a receiver reports a loss
+ * rate high enough to warrant backing off, or low enough to step back
+ * up. Safe to call from a different thread than
+ * bcm2835_encoder_encode_frame(), same reasoning as
+ * bcm2835_encoder_force_keyframe(). Returns 0/-1.
  */
 int bcm2835_encoder_set_bitrate(uint32_t bitrate_bps);
 

@@ -28,9 +28,9 @@ static pthread_t g_udp_thread;
 // and rtp_packetizer_thread: independent start/stop, no shared flag.
 static std::atomic<bool> g_udp_running(false);
 
-// Phase 19 (RTCP): cumulative counts rtcp_sender_thread reads to fill
-// in an SR's packet_count/octet_count fields (RFC 3550 6.4.1 - octet
-// count excludes the RTP header, payload bytes only). Reset only at
+// Cumulative counts rtcp_sender_thread reads to fill in an SR's
+// packet_count/octet_count fields (RFC 3550 6.4.1 - octet count
+// excludes the RTP header, payload bytes only). Reset only at
 // udp_sender_thread_start(), matching "since this session began"
 // semantics real RTCP expects.
 static std::atomic<uint32_t> g_packets_sent(0);

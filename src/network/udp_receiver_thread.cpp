@@ -19,10 +19,10 @@
  * ============================================================================
  *
  * Loop, once per UDP datagram:
- *   0. Phase 19 (RTCP, rtcp-mux): if this datagram looks like an RTCP
- *      SR (RFC 5761 - same port as RTP data, told apart by the packet
- *      type byte), hand it to rtcp_receiver_stats and go straight back
- *      to recvfrom() - it never touches the jitter buffer.
+ *   0. RTCP (rtcp-mux): if this datagram looks like an RTCP SR (RFC
+ *      5761 - same port as RTP data, told apart by the packet type
+ *      byte), hand it to rtcp_receiver_stats and go straight back to
+ *      recvfrom() - it never touches the jitter buffer.
  *   1. Acquire a free rtp_packet_t from rtp_packet_pool.
  *   2. recvfrom() straight into a scratch buffer, then
  *      rtp_depacketize_header() parses the RTP header fields and
@@ -63,7 +63,7 @@ static void *udp_receiver_thread_func(void *arg)
             continue;
         }
 
-        // Phase 19 (RTCP, rtcp-mux): the sender's rtcp_sender_thread
+        // RTCP (rtcp-mux): the sender's rtcp_sender_thread
         // periodically injects SR packets into this same socket/port
         // (RFC 5761) instead of using a separate port. Recognize and
         // divert them here so they never reach the jitter buffer -

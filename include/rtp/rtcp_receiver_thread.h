@@ -4,12 +4,11 @@
 #include <cstdint>
 
 /**
- * PIPELINE STAGE (receiver side, Phase 19 - RTCP):
- * rtcp_receiver_stats -> [THIS] -> Network (multiplexed with control_channel)
+ * PIPELINE STAGE (receiver side): rtcp_receiver_stats -> [THIS] -> Network (multiplexed with control_channel)
  *
  * Periodically builds an RTCP Receiver Report (RFC 3550 6.4.2) from
  * rtcp_receiver_stats and sends it via control_channel's already-open
- * socket (same destination as Phase 18's keyframe requests / loss
+ * socket (same destination as the ad-hoc keyframe requests / loss
  * reports - no new port needed). The sender's control_listener_thread
  * demultiplexes RR packets from the ad-hoc control messages by
  * inspecting the packet type byte - see control_listener_thread.cpp.

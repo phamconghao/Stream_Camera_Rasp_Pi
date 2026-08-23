@@ -11,7 +11,7 @@
  * Sends control messages to the sender's control_listener_thread
  * (network/control_listener_thread.h):
  *   - keyframe request: called from rtp_depacketizer_thread.cpp whenever
- *     rtp_jitter_buffer reports lost packets (Phase 18 recovery).
+ *     rtp_jitter_buffer reports lost packets.
  *   - loss report: called periodically from loss_reporter_thread.cpp
  *     with the observed loss rate, driving the sender's adaptive bitrate.
  *
@@ -35,10 +35,10 @@ void control_channel_request_keyframe(void);
 void control_channel_report_loss(uint32_t loss_permille);
 
 /**
- * Phase 19 (RTCP): sends raw bytes as-is via this module's already-open
- * socket - used by rtcp_receiver_thread to send RTCP RR packets over
- * the same destination as the ad-hoc keyframe-request/loss-report
- * messages above (multiplexed, no new port). Returns the same as
+ * Sends raw bytes as-is via this module's already-open socket - used
+ * by rtcp_receiver_thread to send RTCP RR packets over the same
+ * destination as the ad-hoc keyframe-request/loss-report messages
+ * above (multiplexed, no new port). Returns the same as
  * udp_sender_send(): bytes sent, or -1 on failure.
  */
 int control_channel_send_raw(const uint8_t *data, size_t size);

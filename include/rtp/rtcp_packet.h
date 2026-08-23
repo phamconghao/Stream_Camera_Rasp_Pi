@@ -5,9 +5,7 @@
 #include <cstddef>
 
 /**
- * ============================================================================
- * PHASE 19: RTCP (RFC 3550) - Sender Report / Receiver Report wire format
- * ============================================================================
+ * RTCP (RFC 3550) - Sender Report / Receiver Report wire format.
  *
  * Implements just the two most valuable RTCP packet types for this
  * project - Sender Report (SR) and Receiver Report (RR) - rather than
@@ -22,7 +20,7 @@
  * multiplexed onto the same port (RFC 5761 "rtcp-mux") - see
  * udp_receiver_thread.cpp (SR arriving alongside RTP data) and
  * control_listener_thread.cpp (RR arriving alongside the ad-hoc
- * control-channel messages from Phase 18).
+ * control-channel messages).
  *
  * Common RTCP header (4 bytes), same shape for every packet type:
  *   byte 0: V(2 bits)=2, P(1 bit)=0, RC/SC(5 bits)=count of report blocks

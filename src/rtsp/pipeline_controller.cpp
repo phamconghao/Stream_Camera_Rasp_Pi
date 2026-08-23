@@ -42,13 +42,12 @@ int pipeline_controller_init(void)
     if (camera_capture_init() < 0) return -1;
     if (bcm2835_encoder_init(640, 480) < 0) return -1;
 
-    // Phase 20 step 5 (part 1): cache lives for the whole process
-    // lifetime, NOT toggled per PLAY/TEARDOWN like the thread
-    // start/stop below - a DESCRIBE that arrives after the pipeline
-    // has been stopped (last viewer left) should still be able to
-    // answer from whatever SPS/PPS an earlier PLAYING session already
-    // produced, rather than losing them every time the ref count hits
-    // zero.
+    // This cache lives for the whole process lifetime, NOT toggled
+    // per PLAY/TEARDOWN like the thread start/stop below - a DESCRIBE
+    // that arrives after the pipeline has been stopped (last viewer
+    // left) should still be able to answer from whatever SPS/PPS an
+    // earlier PLAYING session already produced, rather than losing
+    // them every time the ref count hits zero.
     sps_pps_cache_init();
 
     LOG_INFO(TAG, "initialized (RTP destinations added per-session by rtsp_server.cpp)");
@@ -76,7 +75,12 @@ void pipeline_controller_ensure_running(void)
         camera_capture_start();
         rtp_packetizer_thread_start();
         udp_sender_thread_start();
-        webrtc_sender_thread_start(); // Phase 22.6.4 - harmless when idle (webrtc_rtp_packet_queue only ever receives packets once a WebRTC viewer is registered - see rtp_packetizer_thread.cpp's fan_out_to_webrtc()), started here rather than left always-on so it shares the exact same lifecycle as every other consumer of this pipeline's output
+        // Harmless when idle (webrtc_rtp_packet_queue only ever
+        // receives packets once a WebRTC viewer is registered - see
+        // rtp_packetizer_thread.cpp's fan_out_to_webrtc()), started
+        // here rather than left always-on so it shares the exact same
+        // lifecycle as every other consumer of this pipeline's output.
+        webrtc_sender_thread_start();
     }
     else
     {

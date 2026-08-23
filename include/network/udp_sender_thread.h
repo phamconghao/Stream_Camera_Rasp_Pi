@@ -21,9 +21,9 @@ int udp_sender_thread_start(void);
 void udp_sender_thread_stop(void);
 
 /**
- * Phase 19 (RTCP): cumulative packets/payload-octets successfully sent
- * since udp_sender_thread_start(). Read by rtcp_sender_thread to fill
- * in an SR's packet_count/octet_count fields.
+ * Cumulative packets/payload-octets successfully sent since
+ * udp_sender_thread_start(). Read by rtcp_sender_thread to fill in an
+ * SR's packet_count/octet_count fields.
  */
 void udp_sender_thread_get_stats(uint32_t *out_packets_sent, uint32_t *out_octets_sent);
 

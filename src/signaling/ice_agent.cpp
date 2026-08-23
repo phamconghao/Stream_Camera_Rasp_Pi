@@ -145,11 +145,11 @@ static bool lookup_local_pwd(const std::string &username, std::string &out_pwd)
 
 // RFC 7983 section 7's demultiplexing table, boiled down to the
 // content types this project actually handles on this shared port:
-// STUN, DTLS, and now (Phase 22.5.4) SRTCP - the encrypted RTCP
-// feedback (NACK/PLI) a browser sends back. There's no separate "RTP"
-// case: this project's SDP always advertises a=sendonly (webrtc_sdp.cpp),
-// meaning it never expects the browser to send it any RTP at all - any
-// packet in RFC 7983's 128-191 range arriving here can only be RTCP.
+// STUN, DTLS, and SRTCP - the encrypted RTCP feedback (NACK/PLI) a
+// browser sends back. There's no separate "RTP" case: this project's
+// SDP always advertises a=sendonly (webrtc_sdp.cpp), meaning it never
+// expects the browser to send it any RTP at all - any packet in RFC
+// 7983's 128-191 range arriving here can only be RTCP.
 enum class packet_kind_t
 {
     STUN,
@@ -213,18 +213,18 @@ static const char *describe_rtcp_feedback(const uint8_t *data, size_t size)
     return "(not RTPFB/PSFB - other RTCP packet type)";
 }
 
-// PHASE 22.6.6: PLI (RFC 4585 section 6.3.1) and FIR (RFC 5104
-// section 4.3.1) are both explicit "I cannot decode without a fresh
-// keyframe" requests from the browser - unlike generic NACK (RFC 4585
-// section 6.2.1), which asks for specific lost PACKETS to be
-// retransmitted, not a whole new keyframe. This project has no
-// retransmission buffer to satisfy a NACK from (Phase 20's fan-out
-// only ever sends forward, never replays old packets - same
-// real-time-over-reliability bias documented in roadmap.md), so PLI/
-// FIR are the only two feedback types this project can meaningfully
-// act on: force the encoder to produce an IDR frame, exactly what
-// control_listener_thread.cpp's CONTROL_MSG_KEYFRAME_REQUEST path
-// already does for the RTSP/legacy control-channel case.
+// PLI (RFC 4585 section 6.3.1) and FIR (RFC 5104 section 4.3.1) are
+// both explicit "I cannot decode without a fresh keyframe" requests
+// from the browser - unlike generic NACK (RFC 4585 section 6.2.1),
+// which asks for specific lost packets to be retransmitted, not a
+// whole new keyframe. This project has no retransmission buffer to
+// satisfy a NACK from (RTP fan-out only ever sends forward, never
+// replays old packets - a real-time-over-reliability bias documented
+// in roadmap.md), so PLI/FIR are the only two feedback types this
+// project can meaningfully act on: force the encoder to produce an
+// IDR frame, exactly what control_listener_thread.cpp's
+// CONTROL_MSG_KEYFRAME_REQUEST path already does for the RTSP/legacy
+// control-channel case.
 static bool is_keyframe_request(const uint8_t *data, size_t size)
 {
     if (size < 2)
@@ -270,9 +270,9 @@ static void *ice_agent_thread_func(void *arg)
 
         if (kind == packet_kind_t::DTLS)
         {
-            // Phase 22.4: not STUN at all - demux by the SOURCE
-            // ADDRESS this packet arrived from, per the nominated-pair
-            // table populated below once that address's STUN check
+            // Not STUN at all - demux by the source address this
+            // packet arrived from, per the nominated-pair table
+            // populated below once that address's STUN check
             // succeeded (see the STUN success path further down).
             std::string addr_key = make_addr_key(sender_ip, sender_port);
 
@@ -308,16 +308,15 @@ static void *ice_agent_thread_func(void *arg)
 
         if (kind == packet_kind_t::SRTCP)
         {
-            // Phase 22.5.4: encrypted RTCP feedback (NACK/PLI) from
-            // the browser - only meaningful once that address's DTLS
-            // handshake has actually completed (srtp_session_create()
-            // runs at the end of dtls_handshake.cpp's handshake
-            // thread, see dtls_handshake_is_connected()), so this can
-            // legitimately arrive before that and should be dropped
-            // quietly rather than logged as a warning - it's an
-            // expected race, not a bug, and browsers do occasionally
-            // send RTCP a little eagerly relative to when this
-            // project's own handshake thread finishes.
+            // Encrypted RTCP feedback (NACK/PLI) from the browser -
+            // only meaningful once that address's DTLS handshake has
+            // actually completed (srtp_session_create() runs at the
+            // end of dtls_handshake.cpp's handshake thread, see
+            // dtls_handshake_is_connected()), so this can legitimately
+            // arrive before that and should be dropped quietly rather
+            // than logged as a warning - it's an expected race, not a
+            // bug, and browsers do occasionally send RTCP a little
+            // eagerly relative to when the handshake thread finishes.
             std::string addr_key = make_addr_key(sender_ip, sender_port);
 
             pthread_mutex_lock(&g_nominated_pairs_lock);
@@ -347,13 +346,13 @@ static void *ice_agent_thread_func(void *arg)
             LOG_INFO(TAG, "SRTCP feedback from %s:%u (ufrag=%s): %s",
                      sender_ip, sender_port, ufrag.c_str(), describe_rtcp_feedback(buffer, static_cast<size_t>(len)));
 
-            // Phase 22.6.6: PLI/FIR actually force a keyframe now -
-            // see is_keyframe_request()'s comment for why NACK is
-            // deliberately excluded (this project has nothing to
-            // retransmit in response to one). This affects the SAME
-            // shared hardware encoder every viewer (RTSP AND every
-            // other WebRTC session) pulls frames from - one WebRTC
-            // viewer's PLI benefits everyone currently watching, same
+            // PLI/FIR force a keyframe - see is_keyframe_request()'s
+            // comment for why NACK is deliberately excluded (this
+            // project has nothing to retransmit in response to one).
+            // This affects the SAME shared hardware encoder every
+            // viewer (RTSP and every other WebRTC session) pulls
+            // frames from - one WebRTC viewer's PLI benefits everyone
+            // currently watching, same
             // as a keyframe requested via the legacy RTSP control
             // channel already does.
             if (is_keyframe_request(buffer, static_cast<size_t>(len)))
@@ -406,10 +405,10 @@ static void *ice_agent_thread_func(void *arg)
         LOG_INFO(TAG, "answered STUN Binding Request from %s:%u (username=%s)",
                  sender_ip, sender_port, parsed.username.c_str());
 
-        // Phase 22.4: this successful check nominates this pair - the
-        // local ufrag identified by USERNAME's first token (see
-        // lookup_local_pwd()'s comment) is now associated with this
-        // exact source address for any future DTLS traffic.
+        // This successful check nominates this pair - the local ufrag
+        // identified by USERNAME's first token (see lookup_local_pwd()'s
+        // comment) is now associated with this exact source address
+        // for any future DTLS/SRTP traffic.
         std::string local_ufrag = parsed.username.substr(0, parsed.username.find(':'));
         std::string addr_key = make_addr_key(sender_ip, sender_port);
 
@@ -417,7 +416,7 @@ static void *ice_agent_thread_func(void *arg)
         g_nominated_pairs[addr_key] = local_ufrag;
         pthread_mutex_unlock(&g_nominated_pairs_lock);
 
-        // Phase 22.6.2: reverse-direction map, same nomination event.
+        // Reverse-direction map, same nomination event.
         pthread_mutex_lock(&g_ufrag_to_addr_lock);
         g_ufrag_to_addr[local_ufrag] = sender_addr;
         pthread_mutex_unlock(&g_ufrag_to_addr_lock);

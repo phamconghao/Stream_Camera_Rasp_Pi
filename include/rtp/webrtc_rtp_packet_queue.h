@@ -6,11 +6,10 @@
 /**
  * PIPELINE STAGE: RTP Packetizer Thread -> [THIS] -> WebRTC Sender Thread
  *
- * PHASE 22.6.1: same bounded ring-buffer pattern as rtp_packet_queue.h,
- * a completely separate queue instance feeding webrtc_sender_thread.cpp
- * (Phase 22.6.4) instead of udp_sender_thread. See
- * webrtc_rtp_packet_pool.h for why this path needs its own pool/queue
- * rather than sharing rtp_packet_queue's.
+ * Same bounded ring-buffer pattern as rtp_packet_queue.h, a separate
+ * queue instance feeding webrtc_sender_thread.cpp instead of
+ * udp_sender_thread. See webrtc_rtp_packet_pool.h for why this path
+ * needs its own pool/queue rather than sharing rtp_packet_queue's.
  */
 
 int webrtc_rtp_packet_queue_init(void);

@@ -10,13 +10,10 @@
 
 static const char *TAG = "DTLS_CERT";
 
-// Owned for the process lifetime - the DTLS handshake (Phase 22.4)
-// will need both the cert and its matching private key to actually
-// authenticate as this fingerprint; this phase only generates them
-// and computes the fingerprint, but keeps them alive (not freed until
-// dtls_cert_cleanup()) so 22.4 has them ready to use without
-// regenerating (which would change the fingerprint out from under any
-// SDP answer already sent).
+// Owned for the process lifetime - the DTLS handshake needs both the
+// cert and its matching private key to authenticate as this
+// fingerprint, and regenerating them would change the fingerprint out
+// from under any SDP answer already sent.
 static X509 *g_cert = nullptr;
 static EVP_PKEY *g_pkey = nullptr;
 static std::string g_fingerprint;
@@ -128,9 +125,8 @@ static std::string compute_fingerprint_sha256(X509 *cert)
     return out;
 }
 
-// Public wrapper (Phase 22.4) - same logic, exposed for
-// dtls_handshake.cpp to call on the REMOTE peer's certificate, not
-// just this project's own.
+// Public wrapper - same logic, exposed for dtls_handshake.cpp to call
+// on the remote peer's certificate, not just this project's own.
 std::string dtls_cert_fingerprint_sha256(X509 *cert)
 {
     return compute_fingerprint_sha256(cert);

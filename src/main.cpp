@@ -52,20 +52,19 @@
  * copied once, when captured from the camera / read out of the
  * hardware encoder).
  *
- * PHASE 20 step 3 (lazy pipeline lifecycle): unlike every earlier phase,
- * main() below no longer starts the data pipeline above unconditionally
- * at process startup. rtsp/pipeline_controller.{h,cpp} now owns that
+ * The data pipeline above is not started unconditionally at process
+ * startup. rtsp/pipeline_controller.{h,cpp} owns its lifecycle
  * entirely - main() just prepares it (hardware init, pool/queue alloc)
  * via pipeline_controller_init(), then the RTSP server's PLAY/TEARDOWN
  * handlers (rtsp_server.cpp) call pipeline_controller_ensure_running()/
  * _release() as clients come and go. The control channel, RTCP, and the
- * RTSP control plane itself are NOT lazy - they listen continuously
+ * RTSP control plane itself are not lazy - they listen continuously
  * from process startup, independent of whether the data pipeline is
  * currently running, so a client can always connect/DESCRIBE/SETUP even
  * before anyone has PLAYed.
  *
- * CONTROL CHANNEL (Phase 18 packet-loss recovery + adaptive bitrate),
- * separate from the RTP data path above: network/control_listener_thread.{h,cpp}
+ * CONTROL CHANNEL (packet-loss recovery + adaptive bitrate), separate
+ * from the RTP data path above: network/control_listener_thread.{h,cpp}
  * listens on `control_port` for two kinds of UDP messages from the
  * receiver's control_channel (network/control_channel.h):
  *   - keyframe request (sent whenever the receiver's jitter buffer
@@ -79,60 +78,52 @@
  *     network conditions instead of continuing to send at a rate the
  *     link can't sustain.
  *
- * RTCP (Phase 19): network/rtcp_sender_thread.{h,cpp} periodically
+ * RTCP: network/rtcp_sender_thread.{h,cpp} periodically
  * injects a Sender Report (RFC 3550 6.4.1) into the SAME socket
  * udp_sender_thread uses for RTP data (rtcp-mux, RFC 5761 - no new
  * port). This is genuine RFC 3550 wire format (interoperable with
  * tools like Wireshark), separate from and in addition to the ad-hoc
  * control_channel messages above.
  *
- * PHASE 20 step 4 (this commit): RTP fan-out - udp_sender now sends
- * every packet to the destination of EACH currently-PLAYING RTSP
- * session (rtsp_server.cpp's handle_play()/handle_teardown() register/
- * deregister them by session_id), instead of the single fixed
- * dest_ip/dest_port CLI argument earlier phases used for point-to-point
- * testing - that argument is gone below. See udp_sender.h and
- * pipeline_controller.h for the full picture.
+ * RTP FAN-OUT: udp_sender sends every packet to the destination of
+ * each currently-PLAYING RTSP session (rtsp_server.cpp's
+ * handle_play()/handle_teardown() register/deregister them by
+ * session_id) - see udp_sender.h and pipeline_controller.h.
  *
- * PHASE 22.1 (WebRTC signaling, separate from everything above): a
- * second, independent TCP server - signaling/signaling_server.{h,cpp} -
+ * WEBRTC SIGNALING (separate from everything above): a second,
+ * independent TCP server - signaling/signaling_server.{h,cpp} -
  * listens on `signaling_port` for WebSocket connections from a
- * browser's RTCPeerConnection. It has nothing to do with the RTSP/RTP
- * data path yet; this phase only delivers whatever JSON message a
- * client sends to the handler below, unparsed beyond finding "type".
- * Actually acting on "offer"/"ice-candidate" messages (building a
- * WebRTC-flavored SDP answer, starting ICE) is Phase 22.2/22.3 - for
- * now the handler just logs what arrived, so the WebSocket
- * handshake/framing itself can be verified against a real browser
- * independent of any WebRTC logic not written yet.
+ * browser's RTCPeerConnection, used to exchange SDP offer/answer and
+ * ICE candidates. See webrtc_sdp.h, ice_agent.h, dtls_handshake.h, and
+ * srtp_session.h for the rest of the WebRTC media path.
  */
 
-// Phase 22.2.6: how long to wait for a freshly-primed pipeline to
-// produce SPS/PPS before giving up on an offer - same technique and
-// same timeout as Phase 20 step 5's handle_describe() priming (see
-// rtsp_server.cpp), duplicated here since this is a different TCP
-// server (signaling, not RTSP) with no code path connecting the two.
+// How long to wait for a freshly-primed pipeline to produce SPS/PPS
+// before giving up on an offer - same technique and timeout as
+// handle_describe()'s priming (see rtsp_server.cpp), duplicated here
+// since this is a different TCP server (signaling, not RTSP) with no
+// code path connecting the two.
 static constexpr int OFFER_PRIME_MAX_WAIT_ITERATIONS = 20;
 static constexpr int OFFER_PRIME_WAIT_STEP_MS = 50;
 
-// Phase 22.3.4: fixed UDP port ice_agent listens on for STUN Binding
-// Requests - shared across every concurrent peer connection (sessions
-// are told apart by ice_ufrag, not by port - see ice_agent.h).
+// Fixed UDP port ice_agent listens on for STUN Binding Requests -
+// shared across every concurrent peer connection (sessions are told
+// apart by ice_ufrag, not by port - see ice_agent.h).
 static constexpr uint16_t ICE_AGENT_PORT = 40000;
 
-// PHASE 22.6.5: which ice_ufrag a given signaling client_id's WebRTC
-// session is - the only link this project has between "a WebSocket
-// connection closed" (signaling_server.h's disconnect handler, keyed
-// by client_id) and "which ICE/DTLS/SRTP/media session to tear down"
+// Which ice_ufrag a given signaling client_id's WebRTC session is -
+// the only link this project has between "a WebSocket connection
+// closed" (signaling_server.h's disconnect handler, keyed by
+// client_id) and "which ICE/DTLS/SRTP/media session to tear down"
 // (everything else in this file is keyed by ice_ufrag instead, since
-// that's what's shared with the browser over signaling and used
-// throughout ice_agent.cpp/dtls_handshake.cpp). A simple mutex-guarded
-// map, same pattern as every other small registry in this project.
+// that's what's shared with the browser over signaling). A simple
+// mutex-guarded map, same pattern as every other small registry in
+// this project.
 static std::mutex g_client_ufrag_lock;
 static std::map<std::string, std::string> g_client_to_ufrag;
 
-// Called when a signaling WebSocket disconnects (Phase 22.6.5) - the
-// only WebRTC session-end signal this project currently detects (see
+// Called when a signaling WebSocket disconnects - the only WebRTC
+// session-end signal this project currently detects (see
 // signaling_server.h's disconnect handler doc comment for the known
 // limitation: an ICE-level failure/timeout with the WebSocket still
 // open isn't caught by this). Tears down everything that session's
@@ -160,12 +151,12 @@ static void on_signaling_disconnect(const std::string &client_id)
     dtls_handshake_unregister_session(ufrag); // also releases the pipeline ref-count if this session had reached "media ready" (see dtls_handshake.cpp)
 }
 
-// Phase 22.2.6: dispatches a parsed "offer" message to the SDP answer
-// builder (webrtc_sdp.h) and sends the "answer" back over the same
-// signaling connection. ICE (22.3) and DTLS (22.4) haven't run yet at
-// this point - the answer just tells the browser how to reach this
-// project once those phases exist; nothing DATA-related (RTP/SRTP)
-// happens as a result of this yet.
+// Dispatches a parsed "offer" message to the SDP answer builder
+// (webrtc_sdp.h) and sends the "answer" back over the same signaling
+// connection. Nothing data-related (RTP/SRTP) happens as a result of
+// this - the answer just tells the browser how to reach this project;
+// ICE/DTLS/SRTP run afterward, driven by the browser's own connection
+// attempt.
 static void handle_offer(const std::string &client_id, const std::string &sdp)
 {
     webrtc_sdp_offer_t offer = parse_webrtc_sdp_offer(sdp);
@@ -177,9 +168,9 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     }
 
     // Same "prime the pipeline just long enough to get one SPS/PPS"
-    // trick as Phase 20 step 5's handle_describe() - a browser can
-    // just as easily be the very first connection of the process as
-    // an RTSP client can.
+    // trick as handle_describe() uses - a browser can just as easily
+    // be the very first connection of the process as an RTSP client
+    // can.
     bool primed_pipeline = false;
     if (!sps_pps_cache_has_both())
     {
@@ -217,22 +208,22 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
 
     std::string answer_sdp = build_webrtc_sdp_answer(ice.ufrag, ice.pwd, fingerprint, offer.mid, sps, pps);
 
-    // Phase 22.3.4: this session's STUN requests won't validate
-    // against anything until its (ufrag, pwd) is registered with
-    // ice_agent - must happen before the browser could possibly start
-    // sending checks, so it's done here, before the answer (which is
-    // what triggers the browser to start ICE) is even sent.
+    // This session's STUN requests won't validate against anything
+    // until its (ufrag, pwd) is registered with ice_agent - must
+    // happen before the browser could possibly start sending checks,
+    // so it's done here, before the answer (which is what triggers
+    // the browser to start ICE) is even sent.
     ice_agent_register_session(ice.ufrag, ice.pwd);
 
-    // Phase 22.4: this session's DTLS handshake (whenever the browser
-    // actually starts it, over the ICE-verified UDP path above)
-    // needs to know which certificate fingerprint to expect from the
-    // browser - straight from the offer this project just parsed.
+    // This session's DTLS handshake (whenever the browser actually
+    // starts it, over the ICE-verified UDP path above) needs to know
+    // which certificate fingerprint to expect from the browser -
+    // straight from the offer this project just parsed.
     dtls_handshake_register_session(ice.ufrag, offer.fingerprint_algo, offer.fingerprint_hex);
 
-    // Phase 22.6.5: remember which ufrag belongs to this signaling
-    // client_id, so on_signaling_disconnect() can find it later when
-    // this client's WebSocket closes.
+    // Remember which ufrag belongs to this signaling client_id, so
+    // on_signaling_disconnect() can find it later when this client's
+    // WebSocket closes.
     {
         std::lock_guard<std::mutex> lock(g_client_ufrag_lock);
         g_client_to_ufrag[client_id] = ice.ufrag;
@@ -242,8 +233,8 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
 
     signaling_server_send(client_id, json_build_object({{"type", "answer"}, {"sdp", answer_sdp}}));
 
-    // Phase 22.3.3: tell the browser where to send its connectivity
-    // checks. Sent as its own message right after the answer, rather
+    // Tell the browser where to send its connectivity checks. Sent
+    // as its own message right after the answer, rather
     // than embedded inside the answer's SDP, so this project's
     // signaling protocol matches how trickle ICE actually works in
     // practice (candidates as a separate, potentially repeated,
@@ -272,10 +263,9 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     }
 }
 
-// Phase 22.2.6: real dispatch, replacing Phase 22.1's log-only
-// handler. Only "offer" is acted on so far - "ice-candidate" messages
-// are Phase 22.3's job (ICE) and are just logged for now, same as
-// everything was in 22.1.
+// Dispatches incoming signaling messages by type. Only "offer" is
+// acted on so far - "ice-candidate" messages are just logged for now
+// (see the comment below).
 static void on_signaling_message(const std::string &client_id, const std::string &raw_json)
 {
     std::map<std::string, std::string> fields = json_parse_object(raw_json);
@@ -297,7 +287,7 @@ static void on_signaling_message(const std::string &client_id, const std::string
     else
     {
         // Browser's own ice-candidate messages: not consumed yet -
-        // this project's ice_agent (Phase 22.3.4) only implements the
+        // this project's ice_agent only implements the
         // RESPONDER side of ICE (see ice_agent.h's header comment), so
         // it derives the checked address straight from each incoming
         // STUN request's UDP source address rather than needing to
@@ -313,11 +303,11 @@ int main(int argc, char **argv)
     // datagrams from the receiver (see control_listener_thread.h).
     uint16_t control_port = (argc > 1) ? static_cast<uint16_t>(std::atoi(argv[1])) : 5005;
 
-    // TCP port the RTSP control plane listens on (Phase 20).
+    // TCP port the RTSP control plane listens on.
     uint16_t rtsp_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 8554;
 
     // TCP port the WebRTC signaling (WebSocket) server listens on
-    // (Phase 22.1) - independent of rtsp_port above.
+    // independent of rtsp_port above.
     uint16_t signaling_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 8765;
 
     // App-level flag: only main() (or a future signal handler installed
@@ -353,27 +343,27 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    // Phase 22.2.3: one self-signed DTLS cert for the whole process
-    // lifetime, generated before the signaling server starts accepting
-    // offers (its fingerprint is required to build every SDP answer -
-    // see webrtc_sdp.h).
+    // One self-signed DTLS cert for the whole process lifetime,
+    // generated before the signaling server starts accepting offers
+    // (its fingerprint is required to build every SDP answer - see
+    // webrtc_sdp.h).
     if (dtls_cert_init() < 0)
     {
         return -1;
     }
 
-    // Phase 22.4: builds the shared SSL_CTX (cert/key from
-    // dtls_cert_init() above, SRTP profile negotiation enabled) every
-    // DTLS session's handshake uses - must happen after dtls_cert_init()
-    // and before any offer could arrive (same "ready before it's
-    // needed" reasoning as ice_agent_start() below).
+    // Builds the shared SSL_CTX (cert/key from dtls_cert_init()
+    // above, SRTP profile negotiation enabled) every DTLS session's
+    // handshake uses - must happen after dtls_cert_init() and before
+    // any offer could arrive (same "ready before it's needed"
+    // reasoning as ice_agent_start() below).
     if (dtls_handshake_init() < 0)
     {
         return -1;
     }
 
-    // Phase 22.5: libsrtp2's own one-time global init - must happen
-    // before dtls_handshake.cpp's first DTLS handshake could possibly
+    // libsrtp2's own one-time global init - must happen before
+    // dtls_handshake.cpp's first DTLS handshake could possibly
     // complete and try to call srtp_session_create().
     if (srtp_session_manager_init() < 0)
     {
@@ -387,10 +377,10 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    // Phase 22.3.4: must be listening before any offer could possibly
-    // be answered (handle_offer() registers each session's credentials
-    // with this, and sends the browser a candidate pointing at
-    // ICE_AGENT_PORT - both are meaningless if nothing is bound there yet).
+    // Must be listening before any offer could possibly be answered
+    // (handle_offer() registers each session's credentials with this,
+    // and sends the browser a candidate pointing at ICE_AGENT_PORT -
+    // both are meaningless if nothing is bound there yet).
     if (ice_agent_start(ICE_AGENT_PORT) < 0)
     {
         return -1;

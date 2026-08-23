@@ -5,8 +5,8 @@
 
 /**
  * Wire format shared by both sides of the small control channel between
- * camera_receiver and camera_app (Phase 18 packet-loss recovery + the
- * adaptive-bitrate extension). Every message starts with a 1-byte type
+ * camera_receiver and camera_app - packet-loss recovery and the
+ * adaptive-bitrate extension. Every message starts with a 1-byte type
  * tag so control_listener_thread can tell them apart on one socket:
  *
  *   CONTROL_MSG_KEYFRAME_REQUEST - 1 byte total, no payload.
@@ -18,11 +18,11 @@
  *     as parts-per-thousand (so 50 = 5.0% loss). The sender maps this
  *     to a target bitrate tier - see control_listener_thread.cpp.
  *
- * This is intentionally minimal and NOT RFC 3550 RTCP - seePhase 19 on
- * the roadmap for a real RTCP implementation later; this exists to get
- * loss recovery + adaptive bitrate working now with the smallest
- * reasonable amount of code. Both sides must agree on this exact format
- * since it isn't self-describing or versioned.
+ * This is intentionally minimal and not RFC 3550 RTCP - a fuller RTCP
+ * implementation exists separately (see rtp/rtcp_*). This exists to
+ * get loss recovery and adaptive bitrate working with the smallest
+ * reasonable amount of code. Both sides must agree on this exact
+ * format since it isn't self-describing or versioned.
  */
 
 enum : uint8_t

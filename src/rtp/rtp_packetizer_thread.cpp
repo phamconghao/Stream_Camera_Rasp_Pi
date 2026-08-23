@@ -144,14 +144,13 @@ static void emit_single_nal_packet(const h264_nal_t *nal)
              packet->marker ? 1 : 0,
              packet->size - RTP_HEADER_SIZE);
 
-    // Phase 22.6.1: copy for the WebRTC path BEFORE handing this
-    // packet to the RTSP queue below - once rtp_packet_queue_push()
-    // returns, udp_sender_thread could concurrently pop, send, and
-    // release this same pool slot (rtp_packet_pool_release() doesn't
-    // clear memory, only marks the slot free for reacquisition) at
-    // any point after that, making a later read of `packet` here a
-    // race. Right now, before the push, this thread is still the
-    // packet's sole owner.
+    // Copy for the WebRTC path BEFORE handing this packet to the RTSP
+    // queue below - once rtp_packet_queue_push() returns, udp_sender_thread
+    // could concurrently pop, send, and release this same pool slot
+    // (rtp_packet_pool_release() doesn't clear memory, only marks the
+    // slot free for reacquisition) at any point after that, making a
+    // later read of `packet` here a race. Right now, before the push,
+    // this thread is still the packet's sole owner.
     fan_out_to_webrtc(packet);
 
     if (rtp_packet_queue_push(packet) < 0)
@@ -204,8 +203,8 @@ static void emit_fu_a_packets(const h264_nal_t *nal)
                  frag + 1, fragment_count,
                  packet->size - RTP_HEADER_SIZE);
 
-        // Phase 22.6.1: see the single-NAL path's identical comment
-        // above - must copy before handing off to the RTSP queue, not after.
+        // See the single-NAL path's identical comment above - must
+        // copy before handing off to the RTSP queue, not after.
         fan_out_to_webrtc(packet);
 
         if (rtp_packet_queue_push(packet) < 0)
@@ -245,9 +244,8 @@ static void *rtp_packetizer_thread_func(void *arg)
                      nal.size,
                      nal.is_last_nal ? 1 : 0);
 
-            // Phase 20 step 5 (part 1): mirror SPS/PPS into
-            // sps_pps_cache as they fly past, so handle_describe()
-            // (rtsp_server.cpp) can build a real SDP
+            // Mirror SPS/PPS into sps_pps_cache as they fly past, so
+            // handle_describe() (rtsp_server.cpp) can build a real SDP
             // sprop-parameter-sets attribute later without needing to
             // touch the encoder itself. Purely a side-channel copy -
             // does not change how this NAL gets RTP-packetized below.

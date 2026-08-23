@@ -34,10 +34,10 @@ bool try_strip_prefix(const std::string &line, const std::string &prefix, std::s
 }
 
 // Same profile-level-id extraction as rtsp_server.cpp's
-// sps_profile_level_id_hex() (Phase 20 step 5) - duplicated here
-// rather than shared because the two SDP builders otherwise share
-// nothing and pulling this one helper into a common header isn't
-// worth the indirection for 6 lines of code.
+// sps_profile_level_id_hex() - duplicated here rather than shared
+// because the two SDP builders otherwise share nothing and pulling
+// this one helper into a common header isn't worth the indirection
+// for 6 lines of code.
 static std::string sps_profile_level_id_hex(const std::vector<uint8_t> &sps)
 {
     static const char *HEX = "0123456789ABCDEF";
@@ -151,9 +151,9 @@ std::string build_webrtc_sdp_answer(
     sdp << "a=ice-ufrag:" << ice_ufrag << "\r\n";
     sdp << "a=ice-pwd:" << ice_pwd << "\r\n";
     sdp << "a=fingerprint:sha-256 " << fingerprint_sha256 << "\r\n";
-    // Always "passive": this project's Pi-side answer never initiates
-    // the DTLS handshake itself (Phase 22.4) - the browser always
-    // does, regardless of which of "actpass"/"active" it offered.
+    // Always "passive": this side's answer never initiates the DTLS
+    // handshake itself - the browser always does, regardless of which
+    // of "actpass"/"active" it offered.
     sdp << "a=setup:passive\r\n";
     sdp << "a=sendonly\r\n"; // this project only sends video, never receives any from the browser
     sdp << "a=rtpmap:96 H264/90000\r\n";

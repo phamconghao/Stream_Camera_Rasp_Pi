@@ -11,7 +11,7 @@
  * what the actual pipeline uses (see roadmap.md's known-debt notes).
  * Kept only because it's still listed as a build source; safe to
  * delete in a future cleanup pass, same category as the h264_writer
- * module Phase 20 step 6 already removed.
+ * module already removed.
  */
 
 typedef struct
