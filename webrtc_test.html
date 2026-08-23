@@ -198,6 +198,7 @@ document.getElementById('btnConnect').addEventListener('click', async () => {
     // project only ever sends video - see build_webrtc_sdp_answer()'s
     // a=sendonly in the answer) ---
     pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN server needed - this project's ICE is host-candidate-only, see roadmap.md
+    window.pc = pc; // exposed for manual debugging from DevTools Console (e.g. pc.getStats())
     pc.addTransceiver('video', { direction: 'recvonly' });
 
     // Attaches the incoming video track to the <video> element the
