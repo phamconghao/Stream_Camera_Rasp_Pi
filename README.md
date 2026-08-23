@@ -43,7 +43,16 @@ Each pipeline stage owns an independent `static std::atomic<bool>` running flag 
 - CMake ≥ 3.16
 - GCC with C++17 support
 - `libcamera` development package (`libcamera-dev`) discoverable via `pkg-config`
+- OpenSSL development package (`libssl-dev`) discoverable via `pkg-config`
+- libSRTP 2 development package (`libsrtp2-dev`) discoverable via `pkg-config`
 - `pthread`
+
+On Raspberry Pi OS/Debian, install the build dependencies with:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake pkg-config libcamera-dev libssl-dev libsrtp2-dev
+```
 
 ## Build
 
