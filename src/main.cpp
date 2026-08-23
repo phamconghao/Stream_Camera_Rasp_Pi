@@ -10,6 +10,7 @@
 #include "pipeline_controller.h"
 #include "signaling_server.h"
 #include "webrtc_sdp.h"
+#include "webrtc_media_registry.h"
 #include "dtls_cert.h"
 #include "ice_credentials.h"
 #include "ice_candidate.h"
@@ -162,7 +163,7 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     webrtc_sdp_offer_t offer = parse_webrtc_sdp_offer(sdp);
     if (!offer.valid)
     {
-        LOG_WARN("MAIN", "malformed/incomplete offer from client %s", client_id.c_str());
+        LOG_WARN("MAIN", "malformed/incomplete offer from client %s (missing ICE/fingerprint/mid, or no H.264 packetization-mode=1 entry found)", client_id.c_str());
         signaling_server_send(client_id, json_build_object({{"type", "error"}, {"message", "invalid or incomplete SDP offer"}}));
         return;
     }
@@ -206,7 +207,13 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     ice_credentials_t ice = generate_ice_credentials();
     std::string fingerprint = dtls_cert_get_fingerprint_sha256();
 
-    std::string answer_sdp = build_webrtc_sdp_answer(ice.ufrag, ice.pwd, fingerprint, offer.mid, sps, pps);
+    std::string answer_sdp = build_webrtc_sdp_answer(ice.ufrag, ice.pwd, fingerprint, offer.mid, offer.h264_payload_type, sps, pps);
+
+    // Record this session's negotiated payload type now, at offer
+    // time - well before the session reaches "media ready" (DTLS/SRTP
+    // connect), so webrtc_sender_thread.cpp always has it available by
+    // the time there's ever anything to send this session.
+    webrtc_media_registry_set_payload_type(ice.ufrag, offer.h264_payload_type);
 
     // This session's STUN requests won't validate against anything
     // until its (ufrag, pwd) is registered with ice_agent - must

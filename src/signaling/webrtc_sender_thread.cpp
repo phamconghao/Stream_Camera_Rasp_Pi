@@ -61,6 +61,24 @@ static void *webrtc_sender_thread_func(void *arg)
             memcpy(scratch, packet->data, packet->size);
             int len = static_cast<int>(packet->size);
 
+            // `packet` was stamped with this project's fixed internal
+            // payload type (the same one the RTSP path uses), but each
+            // WebRTC viewer's browser assigned its own payload type
+            // number to H.264 in its own offer (see webrtc_sdp.h) -
+            // patch RTP header byte 1's low 7 bits to match what THIS
+            // specific session actually negotiated, preserving the
+            // marker bit (high bit) already set by the packetizer.
+            // Sending the wrong payload type here is silent: RTP-level
+            // reception still succeeds (bytes arrive, get counted),
+            // but the browser routes them to whatever codec it
+            // assigned that PT number to and never assembles a single
+            // decodable frame.
+            uint8_t negotiated_pt = webrtc_media_registry_get_payload_type(ufrag);
+            if (negotiated_pt != 0)
+            {
+                scratch[1] = (scratch[1] & 0x80) | (negotiated_pt & 0x7F);
+            }
+
             if (!srtp_session_protect_rtp(ufrag, scratch, sizeof(scratch), &len))
             {
                 // Not necessarily an error worth alarming about: this

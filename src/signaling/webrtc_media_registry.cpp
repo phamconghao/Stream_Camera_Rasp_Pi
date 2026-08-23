@@ -2,6 +2,7 @@
 
 #include <pthread.h>
 #include <set>
+#include <map>
 
 #include "log.h"
 
@@ -9,6 +10,7 @@ static const char *TAG = "WEBRTC_MEDIA_REG";
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::set<std::string> g_ready_ufrags;
+static std::map<std::string, uint8_t> g_payload_types;
 
 void webrtc_media_registry_add(const std::string &ice_ufrag)
 {
@@ -24,6 +26,7 @@ void webrtc_media_registry_remove(const std::string &ice_ufrag)
 {
     pthread_mutex_lock(&g_lock);
     size_t removed = g_ready_ufrags.erase(ice_ufrag);
+    g_payload_types.erase(ice_ufrag);
     size_t count = g_ready_ufrags.size();
     pthread_mutex_unlock(&g_lock);
 
@@ -47,4 +50,22 @@ std::vector<std::string> webrtc_media_registry_get_all(void)
     std::vector<std::string> result(g_ready_ufrags.begin(), g_ready_ufrags.end());
     pthread_mutex_unlock(&g_lock);
     return result;
+}
+
+void webrtc_media_registry_set_payload_type(const std::string &ice_ufrag, uint8_t payload_type)
+{
+    pthread_mutex_lock(&g_lock);
+    g_payload_types[ice_ufrag] = payload_type;
+    pthread_mutex_unlock(&g_lock);
+
+    LOG_INFO(TAG, "session ufrag=%s negotiated H.264 payload type=%u", ice_ufrag.c_str(), payload_type);
+}
+
+uint8_t webrtc_media_registry_get_payload_type(const std::string &ice_ufrag)
+{
+    pthread_mutex_lock(&g_lock);
+    auto it = g_payload_types.find(ice_ufrag);
+    uint8_t pt = (it != g_payload_types.end()) ? it->second : 0;
+    pthread_mutex_unlock(&g_lock);
+    return pt;
 }
