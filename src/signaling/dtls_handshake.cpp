@@ -16,6 +16,7 @@
 #include "srtp_session.h"
 #include "webrtc_media_registry.h"
 #include "pipeline_controller.h"
+#include "bcm2835_encoder.h"
 #include "log.h"
 
 static const char *TAG = "DTLS_HS";
@@ -434,22 +435,38 @@ static void *handshake_thread_func(void *arg)
     }
     else
     {
-        // Only mark this session "ready for media" once its SRTP
-        // context genuinely exists - webrtc_sender_thread.cpp will
-        // start fanning real RTP out to it the moment this call
-        // returns, so doing this before srtp_session_create()
-        // succeeded would mean sends failing for a session this
-        // registry claims is ready.
-        webrtc_media_registry_add(session->ice_ufrag);
-
         // Keep the camera/encoder/packetizer pipeline running for as
         // long as this WebRTC session is receiving media - symmetric
         // with how rtsp_server.cpp's handle_play() does the same
         // ensure_running() call on an RTSP session's READY->PLAYING
         // transition. Without this, the pipeline would only happen to
-        // be running if some other viewer is also active.
+        // be running if some other viewer is also active. Must happen
+        // before the force-keyframe call below - the encoder device
+        // isn't guaranteed open until this returns.
         pipeline_controller_ensure_running();
         session->media_pipeline_ref_taken = true;
+
+        // This session joins whatever GOP is already in flight (or
+        // none, if the pipeline was idle) - without an IDR of its own,
+        // this browser's H.264 decoder has nothing to start decoding
+        // from and would stay on a black frame until either the
+        // encoder's next regularly-scheduled keyframe or a
+        // browser-initiated PLI round-trip happens to arrive (see
+        // ice_agent.cpp's SRTCP feedback handling). Forcing one here
+        // guarantees this viewer gets a decodable frame immediately
+        // instead of depending on either of those.
+        bcm2835_encoder_force_keyframe();
+
+        // Only mark this session "ready for media" once its SRTP
+        // context genuinely exists - webrtc_sender_thread.cpp will
+        // start fanning real RTP out to it the moment this call
+        // returns, so doing this before srtp_session_create()
+        // succeeded would mean sends failing for a session this
+        // registry claims is ready. Added last, after the
+        // force-keyframe request above, so this session's very first
+        // received frame is that IDR rather than whatever was already
+        // mid-flight.
+        webrtc_media_registry_add(session->ice_ufrag);
     }
 
     return nullptr;

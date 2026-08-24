@@ -360,6 +360,57 @@ int bcm2835_encoder_init(int width, int height)
 
     std::cout << "[ENC] capture format set" << std::endl;
 
+    // Force Baseline profile - bcm2835-codec's own default is High
+    // profile, which the WebRTC path cannot use: browsers only ever
+    // offer a small, fixed set of (payload type, profile-level-id)
+    // pairs for H.264 in their SDP offer, and this project's SDP
+    // answer builder (webrtc_sdp.cpp) just reuses whichever payload
+    // type the offer listed FIRST rather than picking one whose
+    // declared profile actually matches what this encoder produces.
+    // Left at the driver default (High), that PT's decoder gets
+    // initialized for Baseline (per the offer) while actually
+    // receiving High-profile bitstream (CABAC, 8x8 transform, etc. -
+    // syntax Baseline can't parse) - packets arrive and decrypt fine,
+    // but nothing ever decodes, silently. Baseline is what every
+    // browser's first/default H.264 entry expects, and is also what
+    // this project's RTSP path (VLC/ffplay) already tolerates fine, so
+    // this doesn't cost either path anything.
+    struct v4l2_control profile_ctrl;
+    memset(&profile_ctrl, 0, sizeof(profile_ctrl));
+    profile_ctrl.id = V4L2_CID_MPEG_VIDEO_H264_PROFILE;
+    profile_ctrl.value = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE;
+
+    if (ioctl(g_fd, VIDIOC_S_CTRL, &profile_ctrl) < 0)
+    {
+        perror("S_CTRL H264_PROFILE");
+        return -1;
+    }
+
+    std::cout << "[ENC] profile set to baseline" << std::endl;
+
+    // Force level 3.1 to match what browsers' own H.264 offer entries
+    // actually declare for the Baseline PT (see the profile comment
+    // above) - setting profile alone left level at the driver's
+    // default (4.0), still higher than what was negotiated
+    // (profile-level-id=42001f = level 3.1). RFC 6184 8.2.2: without
+    // level-asymmetry-allowed=1 in the answer, a receiver is entitled
+    // to assume it will never see a level higher than what it offered,
+    // and Chrome/Edge's decoder factory can and does hold to that when
+    // deciding whether to even open a decoder for the SPS it receives -
+    // 640x480 needs nowhere near level 4.0's headroom anyway.
+    struct v4l2_control level_ctrl;
+    memset(&level_ctrl, 0, sizeof(level_ctrl));
+    level_ctrl.id = V4L2_CID_MPEG_VIDEO_H264_LEVEL;
+    level_ctrl.value = V4L2_MPEG_VIDEO_H264_LEVEL_3_1;
+
+    if (ioctl(g_fd, VIDIOC_S_CTRL, &level_ctrl) < 0)
+    {
+        perror("S_CTRL H264_LEVEL");
+        return -1;
+    }
+
+    std::cout << "[ENC] level set to 3.1" << std::endl;
+
     // REQBUFS for OUTPUT queue
     struct v4l2_requestbuffers req_out;
     memset(&req_out, 0, sizeof(req_out));
