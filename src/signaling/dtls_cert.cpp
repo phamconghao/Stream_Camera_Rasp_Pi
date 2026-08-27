@@ -95,12 +95,12 @@ static X509 *generate_self_signed_cert(EVP_PKEY *pkey)
     return cert;
 }
 
-static std::string compute_fingerprint_sha256(X509 *cert)
+static std::string compute_fingerprint(X509 *cert, const EVP_MD *md)
 {
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int digest_len = 0;
 
-    if (X509_digest(cert, EVP_sha256(), digest, &digest_len) == 0)
+    if (X509_digest(cert, md, digest, &digest_len) == 0)
     {
         log_openssl_errors("X509_digest");
         return "";
@@ -129,7 +129,29 @@ static std::string compute_fingerprint_sha256(X509 *cert)
 // on the remote peer's certificate, not just this project's own.
 std::string dtls_cert_fingerprint_sha256(X509 *cert)
 {
-    return compute_fingerprint_sha256(cert);
+    return compute_fingerprint(cert, EVP_sha256());
+}
+
+// RFC 8122 section 5's "hash-func" token set, lowercased as SDP
+// conventionally writes them (e.g. "a=fingerprint:sha-256 ..."). Not
+// every algorithm OpenSSL supports is listed here - only the ones any
+// real WebRTC stack has actually been seen advertising - anything else
+// is treated as unrecognized rather than silently guessing.
+std::string dtls_cert_fingerprint(X509 *cert, const std::string &algo_name)
+{
+    const EVP_MD *md = nullptr;
+
+    if (algo_name == "sha-1") md = EVP_sha1();
+    else if (algo_name == "sha-256") md = EVP_sha256();
+    else if (algo_name == "sha-384") md = EVP_sha384();
+    else if (algo_name == "sha-512") md = EVP_sha512();
+
+    if (!md)
+    {
+        return "";
+    }
+
+    return compute_fingerprint(cert, md);
 }
 
 int dtls_cert_init(void)
@@ -148,7 +170,7 @@ int dtls_cert_init(void)
         return -1;
     }
 
-    g_fingerprint = compute_fingerprint_sha256(g_cert);
+    g_fingerprint = compute_fingerprint(g_cert, EVP_sha256());
     if (g_fingerprint.empty())
     {
         X509_free(g_cert);

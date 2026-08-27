@@ -383,8 +383,22 @@ static void *handshake_thread_func(void *arg)
         return nullptr;
     }
 
-    std::string actual_fingerprint = dtls_cert_fingerprint_sha256(peer_cert);
+    // MUST hash with whatever algorithm the offer itself declared
+    // (RFC 8122's "a=fingerprint:<algo> ...") - not every WebRTC stack
+    // signs its self-signed cert's fingerprint with SHA-256 (e.g.
+    // aiortc defaults to SHA-512), and comparing a SHA-256 digest
+    // against a value the peer computed with a different algorithm can
+    // never match regardless of whether the cert is genuine.
+    std::string actual_fingerprint = dtls_cert_fingerprint(peer_cert, session->remote_fingerprint_algo);
     X509_free(peer_cert);
+
+    if (actual_fingerprint.empty())
+    {
+        session->failed = true;
+        LOG_ERROR(TAG, "unsupported fingerprint algorithm '%s' for ufrag=%s - cannot verify peer certificate",
+                  session->remote_fingerprint_algo.c_str(), session->ice_ufrag.c_str());
+        return nullptr;
+    }
 
     if (!fingerprints_match(actual_fingerprint, session->remote_fingerprint_hex))
     {

@@ -47,4 +47,17 @@ EVP_PKEY *dtls_cert_get_pkey(void);
 // promised.
 std::string dtls_cert_fingerprint_sha256(X509 *cert);
 
+// Same fingerprint formatting, but using whichever hash algorithm the
+// peer's own SDP offer declared (RFC 8122's "a=fingerprint:<algo> ...")
+// instead of assuming SHA-256 - a peer is free to sign its own
+// self-signed cert's fingerprint with any hash it likes (sha-1,
+// sha-256, sha-384, sha-512 are the ones this project recognizes;
+// anything else fails closed). This is what dtls_handshake.cpp must
+// use to verify a remote peer's certificate: comparing a SHA-256 hash
+// against a value the peer computed with, say, SHA-512 will never
+// match regardless of whether the cert is genuine. Returns "" for an
+// unrecognized algo name (caller should then treat verification as a
+// hard failure, not fall back to any other digest).
+std::string dtls_cert_fingerprint(X509 *cert, const std::string &algo_name);
+
 #endif // __DTLS_CERT_H__
