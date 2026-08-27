@@ -411,6 +411,35 @@ int bcm2835_encoder_init(int width, int height)
 
     std::cout << "[ENC] level set to 3.1" << std::endl;
 
+    // Without this, bcm2835-codec only ever emits SPS/PPS ONCE, right
+    // after this init - every later IDR (including ones force-requested
+    // via bcm2835_encoder_force_keyframe(), e.g. for a newly-joined
+    // WebRTC viewer) goes out as a bare IDR slice with no parameter
+    // sets alongside it. RTSP viewers don't notice: VLC/ffmpeg bootstrap
+    // their decoder from the SDP answer's sprop-parameter-sets and never
+    // need an in-band SPS/PPS at all. WebRTC's decoder does NOT do that
+    // - aiortc and every browser tested only ever initialize their H.264
+    // decoder from an in-band SPS/PPS actually present in the RTP
+    // stream. A viewer that joins after the one-time initial emission
+    // therefore never receives usable parameter sets and can never
+    // decode a single frame, no matter how many (parameter-set-less)
+    // IDRs it's sent - exactly the "connects fine, zero frames decoded"
+    // bug this fixes. Setting this control makes the encoder re-emit
+    // SPS/PPS before every IDR, matching what RTSP's own SDP path
+    // already assumed was happening.
+    struct v4l2_control repeat_seq_ctrl;
+    memset(&repeat_seq_ctrl, 0, sizeof(repeat_seq_ctrl));
+    repeat_seq_ctrl.id = V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER;
+    repeat_seq_ctrl.value = 1;
+
+    if (ioctl(g_fd, VIDIOC_S_CTRL, &repeat_seq_ctrl) < 0)
+    {
+        perror("S_CTRL REPEAT_SEQ_HEADER");
+        return -1;
+    }
+
+    std::cout << "[ENC] repeat-sequence-header (SPS/PPS before every IDR) enabled" << std::endl;
+
     // REQBUFS for OUTPUT queue
     struct v4l2_requestbuffers req_out;
     memset(&req_out, 0, sizeof(req_out));

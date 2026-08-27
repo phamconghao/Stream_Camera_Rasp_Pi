@@ -48,13 +48,6 @@ struct srtp_session_t
 {
     srtp_t send_ctx = nullptr; // encrypts OUR outbound traffic, keyed with server_write_key/salt (this project is always the DTLS server - a=setup:passive)
     srtp_t recv_ctx = nullptr; // decrypts the BROWSER's inbound traffic, keyed with client_write_key/salt
-
-    // TEMP DIAGNOSTIC (remove after root cause found): kept around so
-    // srtp_session_debug_verify_roundtrip() can build a one-off verify
-    // context using this session's REAL server_write key/salt, to
-    // round-trip actual outbound packets (not just a synthetic one).
-    std::vector<uint8_t> debug_server_write_key;
-    std::vector<uint8_t> debug_server_write_salt;
 };
 
 static pthread_mutex_t g_sessions_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -161,8 +154,6 @@ int srtp_session_create(const std::string &ice_ufrag, const std::vector<uint8_t>
 
     session->send_ctx = create_srtp_ctx(keys.server_write_key, keys.server_write_salt, true);
     session->recv_ctx = create_srtp_ctx(keys.client_write_key, keys.client_write_salt, false);
-    session->debug_server_write_key = keys.server_write_key;
-    session->debug_server_write_salt = keys.server_write_salt;
 
     if (!session->send_ctx || !session->recv_ctx)
     {
@@ -189,61 +180,6 @@ int srtp_session_create(const std::string &ice_ufrag, const std::vector<uint8_t>
     pthread_mutex_unlock(&g_sessions_lock);
 
     LOG_INFO(TAG, "SRTP session created for ufrag=%s (send + recv contexts ready)", ice_ufrag.c_str());
-
-    // TEMP DIAGNOSTIC (remove after root cause found): round-trip a
-    // fake RTP packet through send_ctx (protect) and a fresh context
-    // built with the SAME server_write key/salt (unprotect) - exactly
-    // what the browser does with everything this project actually
-    // sends it. If this fails, the bug is in this project's own SRTP
-    // usage; if it passes, the bug is downstream of encryption
-    // entirely (network, or the browser's own H.264 pipeline).
-    {
-        srtp_t verify_ctx = create_srtp_ctx(keys.server_write_key, keys.server_write_salt, false);
-        if (!verify_ctx)
-        {
-            LOG_ERROR(TAG, "SELFTEST ufrag=%s: could not build verify context", ice_ufrag.c_str());
-        }
-        else
-        {
-            uint8_t buf[64];
-            memset(buf, 0, sizeof(buf));
-            buf[0] = 0x80;
-            buf[1] = 0x66; // marker=0, pt=102
-            buf[2] = 0x00; buf[3] = 0x01; // seq=1
-            buf[4] = 0x00; buf[5] = 0x00; buf[6] = 0x00; buf[7] = 0x00; // ts=0
-            buf[8] = 0x12; buf[9] = 0x34; buf[10] = 0x56; buf[11] = 0x78; // ssrc
-            const char *payload = "SELFTEST_PAYLOAD_1234";
-            size_t payload_len = strlen(payload);
-            memcpy(buf + 12, payload, payload_len);
-            int len = static_cast<int>(12 + payload_len);
-
-            srtp_err_status_t protect_status = srtp_protect(session->send_ctx, buf, &len);
-            if (protect_status != srtp_err_status_ok)
-            {
-                LOG_ERROR(TAG, "SELFTEST ufrag=%s: srtp_protect failed status=%d", ice_ufrag.c_str(), static_cast<int>(protect_status));
-            }
-            else
-            {
-                srtp_err_status_t unprotect_status = srtp_unprotect(verify_ctx, buf, &len);
-                if (unprotect_status != srtp_err_status_ok)
-                {
-                    LOG_ERROR(TAG, "SELFTEST ufrag=%s: FAIL - srtp_unprotect status=%d (round-trip broken)",
-                              ice_ufrag.c_str(), static_cast<int>(unprotect_status));
-                }
-                else if (static_cast<size_t>(len) == 12 + payload_len &&
-                         memcmp(buf + 12, payload, payload_len) == 0)
-                {
-                    LOG_INFO(TAG, "SELFTEST ufrag=%s: PASS - round-trip plaintext matches", ice_ufrag.c_str());
-                }
-                else
-                {
-                    LOG_ERROR(TAG, "SELFTEST ufrag=%s: FAIL - round-trip plaintext MISMATCH (len=%d)", ice_ufrag.c_str(), len);
-                }
-            }
-
-            srtp_dealloc(verify_ctx);
-        }
-    }
 
     return 0;
 }
@@ -294,50 +230,6 @@ bool srtp_session_protect_rtp(const std::string &ice_ufrag, uint8_t *buffer, siz
     }
 
     return true;
-}
-
-// TEMP DIAGNOSTIC (remove after root cause found): given the ACTUAL
-// ciphertext this session just sent (post srtp_protect), tries to
-// unprotect a copy of it using a freshly-built context keyed with the
-// SAME server_write key/salt the browser itself would use to decrypt
-// our outbound traffic - i.e. simulates the browser's decrypt step
-// for this exact real packet, not a synthetic stand-in.
-void srtp_session_debug_verify_roundtrip(const std::string &ice_ufrag, const uint8_t *ciphertext, size_t len)
-{
-    pthread_mutex_lock(&g_sessions_lock);
-    auto it = g_sessions.find(ice_ufrag);
-    if (it == g_sessions.end())
-    {
-        pthread_mutex_unlock(&g_sessions_lock);
-        return;
-    }
-    std::vector<uint8_t> key = it->second->debug_server_write_key;
-    std::vector<uint8_t> salt = it->second->debug_server_write_salt;
-    pthread_mutex_unlock(&g_sessions_lock);
-
-    srtp_t verify_ctx = create_srtp_ctx(key, salt, false);
-    if (!verify_ctx)
-    {
-        LOG_ERROR(TAG, "DBGVERIFY ufrag=%s: could not build verify context", ice_ufrag.c_str());
-        return;
-    }
-
-    std::vector<uint8_t> copy(ciphertext, ciphertext + len);
-    int copy_len = static_cast<int>(len);
-
-    srtp_err_status_t status = srtp_unprotect(verify_ctx, copy.data(), &copy_len);
-    if (status != srtp_err_status_ok)
-    {
-        LOG_ERROR(TAG, "DBGVERIFY ufrag=%s: FAIL status=%d on REAL packet (len=%zu)",
-                  ice_ufrag.c_str(), static_cast<int>(status), len);
-    }
-    else
-    {
-        LOG_INFO(TAG, "DBGVERIFY ufrag=%s: PASS on REAL packet (ciphertext=%zu -> plaintext=%d)",
-                 ice_ufrag.c_str(), len, copy_len);
-    }
-
-    srtp_dealloc(verify_ctx);
 }
 
 bool srtp_session_unprotect_rtcp(const std::string &ice_ufrag, uint8_t *buffer, size_t buffer_capacity, int *len)

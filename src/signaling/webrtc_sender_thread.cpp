@@ -88,18 +88,6 @@ static void *webrtc_sender_thread_func(void *arg)
                 continue;
             }
 
-            // TEMP DIAGNOSTIC (remove after root cause found): verify
-            // this REAL (full-size, real content) ciphertext packet
-            // round-trips with the browser's own decrypt key - throttled
-            // to every 200th packet so this doesn't dominate the log.
-            {
-                static uint32_t debug_verify_counter = 0;
-                if ((debug_verify_counter++ % 200) == 0)
-                {
-                    srtp_session_debug_verify_roundtrip(ufrag, scratch, static_cast<size_t>(len));
-                }
-            }
-
             if (!ice_agent_send_to_peer(ufrag, scratch, static_cast<size_t>(len)))
             {
                 LOG_WARN(TAG, "failed to send encrypted RTP to ufrag=%s (seq=%u)",

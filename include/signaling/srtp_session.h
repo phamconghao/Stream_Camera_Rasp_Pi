@@ -63,7 +63,4 @@ bool srtp_session_protect_rtp(const std::string &ice_ufrag, uint8_t *buffer, siz
 // session's client_write key (the peer's own outbound key).
 bool srtp_session_unprotect_rtcp(const std::string &ice_ufrag, uint8_t *buffer, size_t buffer_capacity, int *len);
 
-// TEMP DIAGNOSTIC (remove after root cause found): see srtp_session.cpp.
-void srtp_session_debug_verify_roundtrip(const std::string &ice_ufrag, const uint8_t *ciphertext, size_t len);
-
 #endif // __SRTP_SESSION_H__
