@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstdint>
+#include <string>
 #include <unistd.h>
 
 #include "app_state.h"
@@ -317,6 +318,25 @@ int main(int argc, char **argv)
     // independent of rtsp_port above.
     uint16_t signaling_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 8765;
 
+    // PHASE 23.2: control-channel HMAC secret - deliberately an env
+    // var, not a positional argv (argv is visible to any local user via
+    // /proc/<pid>/cmdline or `ps`; an env var set in a systemd unit
+    // file or shell profile isn't). Required, not optional with a
+    // built-in default - a default baked into the binary would be
+    // public the moment this project's source is, defeating the point.
+    // Must match what camera_receiver's CAMERA_CONTROL_SECRET is set
+    // to, or every control message it sends will be rejected.
+    const char *control_secret_env = std::getenv("CAMERA_CONTROL_SECRET");
+    if (control_secret_env == nullptr || control_secret_env[0] == '\0')
+    {
+        std::cerr << "CAMERA_CONTROL_SECRET environment variable must be set "
+                     "(shared secret for control-channel HMAC authentication, "
+                     "see docs-security-threat-model.md) - refusing to start "
+                     "with no authentication on the control channel.\n";
+        return -1;
+    }
+    std::string control_secret(control_secret_env);
+
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
     // independent running flag for start/stop, so they can be controlled
@@ -335,7 +355,7 @@ int main(int argc, char **argv)
 
     // These three listen continuously from startup, independent of
     // whether any client has PLAYed yet.
-    if (control_listener_thread_start(control_port) < 0)
+    if (control_listener_thread_start(control_port, control_secret) < 0)
     {
         return -1;
     }

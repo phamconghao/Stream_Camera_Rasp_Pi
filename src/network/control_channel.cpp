@@ -2,15 +2,18 @@
 #include "control_protocol.h"
 
 #include <arpa/inet.h>
+#include <cstring>
 
 #include "udp_sender.h"
 #include "time_utils.h"
+#include "hmac.h"
 #include "log.h"
 
 static const char *TAG = "CTRL_CHAN";
 
 static bool g_initialized = false;
 static uint64_t g_last_keyframe_request_us = 0;
+static std::string g_control_secret;
 
 // Don't send more than one keyframe request every 500ms: a burst of
 // loss events during one bad patch of network should trigger a single
@@ -27,7 +30,7 @@ static constexpr uint64_t KEYFRAME_REQUEST_MIN_INTERVAL_US = 500 * 1000;
 // its single destination under a fixed key.
 static const char *CONTROL_DEST_KEY = "control_channel";
 
-int control_channel_init(const char *sender_ip, uint16_t control_port)
+int control_channel_init(const char *sender_ip, uint16_t control_port, const std::string &control_secret)
 {
     if (udp_sender_init() < 0)
     {
@@ -40,6 +43,7 @@ int control_channel_init(const char *sender_ip, uint16_t control_port)
         return -1;
     }
 
+    g_control_secret = control_secret;
     g_initialized = true;
     g_last_keyframe_request_us = 0;
 
@@ -52,6 +56,7 @@ void control_channel_cleanup(void)
     {
         udp_sender_cleanup();
         g_initialized = false;
+        g_control_secret.clear();
     }
 }
 
@@ -70,8 +75,17 @@ void control_channel_request_keyframe(void)
         return;
     }
 
-    uint8_t msg = CONTROL_MSG_KEYFRAME_REQUEST;
-    if (udp_sender_send(&msg, sizeof(msg)) < 0)
+    // PHASE 23.2: message is the 1-byte type tag followed by a
+    // CONTROL_MSG_HMAC_SIZE-byte HMAC-SHA256 over that byte, keyed with
+    // g_control_secret - control_listener_thread.cpp verifies this
+    // before acting on the request.
+    uint8_t buf[1 + CONTROL_MSG_HMAC_SIZE];
+    buf[0] = CONTROL_MSG_KEYFRAME_REQUEST;
+
+    std::vector<uint8_t> mac = hmac_sha256(g_control_secret, buf, 1);
+    std::memcpy(buf + 1, mac.data(), CONTROL_MSG_HMAC_SIZE);
+
+    if (udp_sender_send(buf, sizeof(buf)) < 0)
     {
         LOG_WARN(TAG, "failed to send keyframe request");
         return;
@@ -92,7 +106,16 @@ void control_channel_report_loss(uint32_t loss_permille)
     report.type = CONTROL_MSG_LOSS_REPORT;
     report.loss_permille_be = htonl(loss_permille);
 
-    if (udp_sender_send(reinterpret_cast<const uint8_t *>(&report), sizeof(report)) < 0)
+    // PHASE 23.2: same scheme as control_channel_request_keyframe()
+    // above - HMAC-SHA256 over the report struct's bytes, appended
+    // after it.
+    uint8_t buf[sizeof(control_loss_report_t) + CONTROL_MSG_HMAC_SIZE];
+    std::memcpy(buf, &report, sizeof(report));
+
+    std::vector<uint8_t> mac = hmac_sha256(g_control_secret, buf, sizeof(report));
+    std::memcpy(buf + sizeof(report), mac.data(), CONTROL_MSG_HMAC_SIZE);
+
+    if (udp_sender_send(buf, sizeof(buf)) < 0)
     {
         LOG_WARN(TAG, "failed to send loss report");
         return;

@@ -2,6 +2,7 @@
 #define __CONTROL_LISTENER_THREAD_H__
 
 #include <cstdint>
+#include <string>
 
 /**
  * PIPELINE STAGE (sender side, control channel): Network -> [THIS] ->
@@ -17,9 +18,14 @@
  * Independent thread, own running flag, same start/stop convention as
  * every other thread in this project. Renamed from keyframe_listener_thread
  * once it grew a second message type - same module, broader job.
+ *
+ * PHASE 23.2: `control_secret` must match the value control_channel.cpp
+ * on the receiver side was given - every keyframe-request/loss-report
+ * datagram is HMAC-SHA256-verified against it before being acted on
+ * (see docs-security-threat-model.md).
  */
 
-int control_listener_thread_start(uint16_t control_port);
+int control_listener_thread_start(uint16_t control_port, const std::string &control_secret);
 void control_listener_thread_stop(void);
 
 #endif // __CONTROL_LISTENER_THREAD_H__

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <string>
 
 /**
  * PIPELINE STAGE (receiver side, control channel):
@@ -18,9 +19,14 @@
  * Thin wrapper around udp_sender (reused as-is - it's just "send bytes
  * to a fixed UDP destination", nothing RTP-specific). Renamed from
  * keyframe_requester once it grew a second message type.
+ *
+ * PHASE 23.2: both message types are signed with HMAC-SHA256 (see
+ * common/hmac.h and control_protocol.h) before sending, using
+ * `control_secret` below - control_listener_thread.cpp verifies this
+ * on the receiving end and drops anything that doesn't match.
  */
 
-int control_channel_init(const char *sender_ip, uint16_t control_port);
+int control_channel_init(const char *sender_ip, uint16_t control_port, const std::string &control_secret);
 void control_channel_cleanup(void);
 
 // Sends a keyframe request unless one was already sent recently (see
@@ -40,6 +46,14 @@ void control_channel_report_loss(uint32_t loss_permille);
  * destination as the ad-hoc keyframe-request/loss-report messages
  * above (multiplexed, no new port). Returns the same as
  * udp_sender_send(): bytes sent, or -1 on failure.
+ *
+ * PHASE 23.2 NOTE: deliberately NOT HMAC-signed like the two message
+ * types above - control_listener_thread.cpp's handle_rtcp_rr() only
+ * logs these for observability and doesn't act on them (see that
+ * function's own comment), so there is nothing here for a forged
+ * packet to actually cause; see docs-security-threat-model.md section
+ * 1.1 row (b). If this ever starts driving a real decision, it needs
+ * the same authentication as the other two message types first.
  */
 int control_channel_send_raw(const uint8_t *data, size_t size);
 

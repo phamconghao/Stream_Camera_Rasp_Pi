@@ -136,6 +136,7 @@ set(SOURCES
     src/common/base64.cpp
     src/common/sha1.cpp
     src/common/json_lite.cpp
+    src/common/hmac.cpp
 )
 
 #
@@ -179,6 +180,7 @@ set(RECEIVER_SOURCES
 
     src/common/app_state.cpp
     src/common/log.cpp
+    src/common/hmac.cpp
 )
 
 #
@@ -207,10 +209,16 @@ target_link_libraries(
     ${LIBSRTP2_LIBRARIES}
 )
 
+#
+# PHASE 23.2: camera_receiver now needs OpenSSL too (common/hmac.cpp,
+# used by control_channel.cpp to sign control-channel messages) -
+# previously only camera_app needed it (Phase 22's DTLS/SDP work).
+#
 target_link_libraries(
     camera_receiver
 
     pthread
+    ${OPENSSL_LIBRARIES}
 )
 
 #

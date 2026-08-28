@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <atomic>
 #include <arpa/inet.h>
+#include <string>
 
 #include "control_listener_thread.h"
 #include "control_protocol.h"
@@ -9,6 +10,7 @@
 #include "bcm2835_encoder.h"
 #include "rtcp_packet.h"
 #include "time_utils.h"
+#include "hmac.h"
 #include "log.h"
 
 static const char *TAG = "CTRL_LISTEN";
@@ -16,6 +18,39 @@ static const char *TAG = "CTRL_LISTEN";
 static pthread_t g_thread;
 static std::atomic<bool> g_running(false);
 static std::atomic<uint32_t> g_keyframe_requests_total(0);
+static std::string g_control_secret;
+
+// PHASE 23.2: failed-HMAC-verification datagrams are logged, but on
+// their own rate-limited timer (separate from
+// KEYFRAME_REQUEST_MIN_INTERVAL_US below, which only throttles the
+// legitimate client's own requests, not attacker traffic hitting this
+// listener directly) - a flood of forged datagrams shouldn't be able
+// to flood this process's log output/disk as a side effect of being
+// rejected. Failures are still counted every time, just summarized
+// periodically instead of logged one-by-one.
+static uint32_t g_auth_failures_since_log = 0;
+static uint64_t g_last_auth_failure_log_us = 0;
+static constexpr uint64_t AUTH_FAILURE_LOG_MIN_INTERVAL_US = 5 * 1000 * 1000; // 5s
+
+static void log_auth_failure(const char *what)
+{
+    g_auth_failures_since_log++;
+
+    uint64_t now = time_utils_now_us();
+    if (g_last_auth_failure_log_us != 0 &&
+        now - g_last_auth_failure_log_us < AUTH_FAILURE_LOG_MIN_INTERVAL_US)
+    {
+        return;
+    }
+
+    LOG_WARN(TAG, "%u control datagram(s) failed HMAC verification in the last ~%llus (most recent: %s) - dropped",
+             g_auth_failures_since_log,
+             static_cast<unsigned long long>(AUTH_FAILURE_LOG_MIN_INTERVAL_US / 1000000),
+             what);
+
+    g_auth_failures_since_log = 0;
+    g_last_auth_failure_log_us = now;
+}
 
 // Idea #3 (monitoring dashboard): where the sender's live stats get
 // written every time a control message is handled, for dashboard.html
@@ -171,7 +206,7 @@ static void *control_listener_thread_func(void *arg)
 
     LOG_INFO(TAG, "thread started");
 
-    uint8_t scratch[64]; // largest message today (rtcp_rr_t) is 32 bytes; generous headroom
+    uint8_t scratch[64]; // largest message today (control_loss_report_t + HMAC-SHA256 = 37 bytes, PHASE 23.2) still fits with headroom
 
     while (g_running)
     {
@@ -190,25 +225,43 @@ static void *control_listener_thread_func(void *arg)
 
         if (rtcp_is_rr(scratch, static_cast<size_t>(n)))
         {
+            // PHASE 23.2: deliberately not HMAC-checked - see
+            // control_channel.h's control_channel_send_raw() comment
+            // for why (this path only logs, never acts).
             handle_rtcp_rr(reinterpret_cast<const rtcp_rr_t *>(scratch));
         }
-        else if (n >= 1 && scratch[0] == CONTROL_MSG_KEYFRAME_REQUEST)
+        else if (n == static_cast<int>(1 + CONTROL_MSG_HMAC_SIZE) &&
+                 scratch[0] == CONTROL_MSG_KEYFRAME_REQUEST)
         {
+            if (!hmac_sha256_verify(g_control_secret, scratch, 1, scratch + 1, CONTROL_MSG_HMAC_SIZE))
+            {
+                log_auth_failure("keyframe request");
+                continue;
+            }
+
             LOG_INFO(TAG, "keyframe request received - forcing IDR on next frame");
             bcm2835_encoder_force_keyframe();
             g_keyframe_requests_total++;
             write_stats_json();
         }
-        else if (n == static_cast<int>(sizeof(control_loss_report_t)) &&
+        else if (n == static_cast<int>(sizeof(control_loss_report_t) + CONTROL_MSG_HMAC_SIZE) &&
                  scratch[0] == CONTROL_MSG_LOSS_REPORT)
         {
+            if (!hmac_sha256_verify(g_control_secret, scratch, sizeof(control_loss_report_t),
+                                     scratch + sizeof(control_loss_report_t), CONTROL_MSG_HMAC_SIZE))
+            {
+                log_auth_failure("loss report");
+                continue;
+            }
+
             handle_loss_report(reinterpret_cast<const control_loss_report_t *>(scratch));
         }
         else
         {
             // Ignore anything else (stray traffic, port scans, a
-            // truncated/malformed loss report) rather than acting on
-            // unrecognized input.
+            // truncated/malformed message, or a message of the right
+            // type/size that just failed the checks above) rather than
+            // acting on unrecognized input.
             LOG_WARN(TAG, "ignoring unrecognized control datagram (%d bytes)", n);
         }
     }
@@ -218,13 +271,14 @@ static void *control_listener_thread_func(void *arg)
     return nullptr;
 }
 
-int control_listener_thread_start(uint16_t control_port)
+int control_listener_thread_start(uint16_t control_port, const std::string &control_secret)
 {
     if (udp_receiver_init(control_port) < 0)
     {
         return -1;
     }
 
+    g_control_secret = control_secret;
     g_current_tier = bitrate_tier_t::UNKNOWN;
     g_running = true;
 
@@ -248,4 +302,6 @@ void control_listener_thread_stop(void)
     udp_receiver_cleanup();
 
     pthread_join(g_thread, nullptr);
+
+    g_control_secret.clear();
 }

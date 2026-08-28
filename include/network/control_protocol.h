@@ -23,13 +23,28 @@
  * get loss recovery and adaptive bitrate working with the smallest
  * reasonable amount of code. Both sides must agree on this exact
  * format since it isn't self-describing or versioned.
+ *
+ * PHASE 23.2: both message types above are followed on the wire by a
+ * trailing CONTROL_MSG_HMAC_SIZE-byte HMAC-SHA256 (see common/hmac.h),
+ * computed over exactly the bytes shown above (the un-suffixed
+ * message), keyed with a shared secret both executables are started
+ * with. control_listener_thread.cpp verifies this before acting on
+ * either message type - see docs-security-threat-model.md for why.
+ * RTCP RR packets relayed via control_channel_send_raw() are
+ * deliberately NOT covered by this - see that function's comment.
  */
+
+#include <cstddef>
 
 enum : uint8_t
 {
     CONTROL_MSG_KEYFRAME_REQUEST = 0xA5,
     CONTROL_MSG_LOSS_REPORT = 0xB6,
 };
+
+// HMAC-SHA256 digest size (see common/hmac.h) - the trailing MAC length
+// on both authenticated message types above.
+static constexpr size_t CONTROL_MSG_HMAC_SIZE = 32;
 
 #pragma pack(push, 1)
 struct control_loss_report_t

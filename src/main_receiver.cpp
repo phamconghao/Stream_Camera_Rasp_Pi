@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstdint>
+#include <string>
 
 #include "app_state.h"
 #include "rtp_packet_pool.h"
@@ -99,6 +100,20 @@ int main(int argc, char **argv)
     const char *sender_ip = (argc > 3) ? argv[3] : "192.168.1.100";
     uint16_t control_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 5005;
 
+    // PHASE 23.2: must match camera_app's CAMERA_CONTROL_SECRET exactly
+    // - see the matching check/comment in main.cpp for why this is an
+    // env var rather than a positional argv.
+    const char *control_secret_env = std::getenv("CAMERA_CONTROL_SECRET");
+    if (control_secret_env == nullptr || control_secret_env[0] == '\0')
+    {
+        std::cerr << "CAMERA_CONTROL_SECRET environment variable must be set "
+                     "(shared secret for control-channel HMAC authentication, "
+                     "see docs-security-threat-model.md) - refusing to start "
+                     "with no authentication on the control channel.\n";
+        return -1;
+    }
+    std::string control_secret(control_secret_env);
+
     // Idea #4 (dashcam-style recording): directory circular_h264_writer
     // rotates segments into. Pass "none" to disable recording entirely.
     // Defaults to keeping the last 10 minutes (10 segments x 60s) -
@@ -149,7 +164,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    if (control_channel_init(sender_ip, control_port) < 0)
+    if (control_channel_init(sender_ip, control_port, control_secret) < 0)
     {
         return -1;
     }
