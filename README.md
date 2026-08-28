@@ -29,7 +29,7 @@ Every stage hands off a **pointer**, never a copy — frame/packet bytes are cop
 | Monitoring dashboard (`dashboard.html`) | ✅ Implemented |
 | Dashcam-style circular H.264 recording (receiver side) | ✅ Implemented |
 | RTSP server (`OPTIONS`/`DESCRIBE`/`SETUP`/`PLAY`/`TEARDOWN`, session registry, lazy pipeline start, real SDP from cached SPS/PPS) | ✅ Implemented (6/6 steps) — see `roadmap.md` |
-| WebRTC (browser playback via ICE/DTLS/SRTP) | ⏳ Planned, not started — see `roadmap.md`'s Phase 22 sub-phase breakdown (22.1-22.6) |
+| WebRTC (browser playback via ICE/DTLS/SRTP) | ✅ Implemented (6/6 sub-phase) — real video confirmed playing in Chrome/Edge over real WiFi, see `roadmap.md`'s Phase 22 breakdown (22.1-22.7) and `docs-webrtc-black-screen-postmortem.md` |
 | Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ⏳ Not started |
 
 Full phase-by-phase status, including implementation evidence per step, lives in [`roadmap.md`](./roadmap.md) — treat that file as the single source of truth over this README for anything more granular than the table above.
@@ -134,7 +134,7 @@ roadmap.md         Phase-by-phase status and implementation evidence (source of 
 
 ## Roadmap
 
-See [`roadmap.md`](./roadmap.md) for the full 24-phase roadmap with per-phase implementation evidence. Current focus: **Phase 22 (WebRTC)**, broken into sub-phases 22.1-22.6 (signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration). None of 22.1-22.6 are implemented yet.
+See [`roadmap.md`](./roadmap.md) for the full 24-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. Current focus: real-hardware validation — RTSP (Phase 20 steps 4-6) and WebRTC (Phase 22) with an actual CSI camera on the Pi, plus Security (Phase 23).
 
 ## Design notes
 
