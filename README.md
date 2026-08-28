@@ -30,6 +30,7 @@ Every stage hands off a **pointer**, never a copy — frame/packet bytes are cop
 | Dashcam-style circular H.264 recording (receiver side) | ✅ Implemented |
 | RTSP server (`OPTIONS`/`DESCRIBE`/`SETUP`/`PLAY`/`TEARDOWN`, session registry, lazy pipeline start, real SDP from cached SPS/PPS) | ✅ Implemented (6/6 steps) — see `roadmap.md` |
 | WebRTC (browser playback via ICE/DTLS/SRTP) | ✅ Implemented (6/6 sub-phase) — real video confirmed playing in Chrome/Edge over real WiFi, see `roadmap.md`'s Phase 22 breakdown (22.1-22.7) and `docs-webrtc-black-screen-postmortem.md` |
+| Remote/WAN access (viewing from a different network than the Pi — e.g. phone on cellular) | ⏳ Not started — currently **same-LAN only** (WebRTC only generates a host ICE candidate, no STUN/TURN; RTSP has no NAT traversal), see `roadmap.md`'s Phase 23 breakdown |
 | Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ⏳ Not started |
 
 Full phase-by-phase status, including implementation evidence per step, lives in [`roadmap.md`](./roadmap.md) — treat that file as the single source of truth over this README for anything more granular than the table above.
