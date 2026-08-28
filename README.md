@@ -30,8 +30,8 @@ Every stage hands off a **pointer**, never a copy — frame/packet bytes are cop
 | Dashcam-style circular H.264 recording (receiver side) | ✅ Implemented |
 | RTSP server (`OPTIONS`/`DESCRIBE`/`SETUP`/`PLAY`/`TEARDOWN`, session registry, lazy pipeline start, real SDP from cached SPS/PPS) | ✅ Implemented (6/6 steps) — see `roadmap.md` |
 | WebRTC (browser playback via ICE/DTLS/SRTP) | ✅ Implemented (6/6 sub-phase) — real video confirmed playing in Chrome/Edge over real WiFi, see `roadmap.md`'s Phase 22 breakdown (22.1-22.7) and `docs-webrtc-black-screen-postmortem.md` |
-| Remote/WAN access (viewing from a different network than the Pi — e.g. phone on cellular) | ⏳ Not started — currently **same-LAN only** (WebRTC only generates a host ICE candidate, no STUN/TURN; RTSP has no NAT traversal), see `roadmap.md`'s Phase 23 breakdown |
-| Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ⏳ Not started |
+| Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ⏳ Not started — planned as Phase 23, reordered *ahead of* remote access since it's a prerequisite for it, see `roadmap.md`'s Phase 23 breakdown |
+| Remote/WAN access (viewing from a different network than the Pi — e.g. phone on cellular) | ⏳ Not started — currently **same-LAN only**; planned as Phase 24 via Tailscale VPN (chosen over STUN/TURN/port-forwarding), see `roadmap.md`'s Phase 24 breakdown |
 
 Full phase-by-phase status, including implementation evidence per step, lives in [`roadmap.md`](./roadmap.md) — treat that file as the single source of truth over this README for anything more granular than the table above.
 
@@ -135,7 +135,7 @@ roadmap.md         Phase-by-phase status and implementation evidence (source of 
 
 ## Roadmap
 
-See [`roadmap.md`](./roadmap.md) for the full 24-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. Current focus: real-hardware validation — RTSP (Phase 20 steps 4-6) and WebRTC (Phase 22) with an actual CSI camera on the Pi, plus Security (Phase 23).
+See [`roadmap.md`](./roadmap.md) for the full 25-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. Current focus: real-hardware validation — RTSP (Phase 20 steps 4-6) and WebRTC (Phase 22) with an actual CSI camera on the Pi — plus, in order, Security for external-network access (Phase 23) followed by Remote/WAN access via Tailscale (Phase 24).
 
 ## Design notes
 
