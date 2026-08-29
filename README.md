@@ -30,7 +30,7 @@ Every stage hands off a **pointer**, never a copy — frame/packet bytes are cop
 | Dashcam-style circular H.264 recording (receiver side) | ✅ Implemented |
 | RTSP server (`OPTIONS`/`DESCRIBE`/`SETUP`/`PLAY`/`TEARDOWN`, session registry, lazy pipeline start, real SDP from cached SPS/PPS) | ✅ Implemented (6/6 steps) — see `roadmap.md` |
 | WebRTC (browser playback via ICE/DTLS/SRTP) | ✅ Implemented (6/6 sub-phase) — real video confirmed playing in Chrome/Edge over real WiFi, see `roadmap.md`'s Phase 22 breakdown (22.1-22.7) and `docs-webrtc-black-screen-postmortem.md` |
-| Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ⏳ Not started — planned as Phase 23, reordered *ahead of* remote access since it's a prerequisite for it, see `roadmap.md`'s Phase 23 breakdown |
+| Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ✅ Done — control channel HMAC-SHA256 (23.2), RTSP Digest Auth (23.3), WebSocket signaling token (23.4), centralized auth-failure logging + temporary IP blocking (23.5), all fail-closed on missing credentials, see `roadmap.md`'s Phase 23 breakdown. SRTP for RTSP/RTP itself remains out of scope for this phase (accepted trade-off - see Phase 23's "known limitation" note in `roadmap.md`), covered instead by Phase 24's Tailscale VPN tunnel |
 | Remote/WAN access (viewing from a different network than the Pi — e.g. phone on cellular) | ⏳ Not started — currently **same-LAN only**; planned as Phase 24 via Tailscale VPN (chosen over STUN/TURN/port-forwarding), see `roadmap.md`'s Phase 24 breakdown |
 
 Full phase-by-phase status, including implementation evidence per step, lives in [`roadmap.md`](./roadmap.md) — treat that file as the single source of truth over this README for anything more granular than the table above.
@@ -74,28 +74,46 @@ The build enables `-Wall -Wextra -Wpedantic -Werror`, so any new warning fails t
 
 ## Run
 
+**PHASE 23: as of Security (Phase 23), `camera_app` requires four environment variables to be set before it will start — it fails closed (refuses to start, no fallback to an unauthenticated/default-keyed mode) if any are missing:**
+
+| Env var | Used for |
+|---|---|
+| `CAMERA_CONTROL_SECRET` | HMAC-SHA256 key authenticating control-channel datagrams (keyframe requests, loss reports) from `camera_receiver` — must match `camera_receiver`'s own `CAMERA_CONTROL_SECRET` exactly |
+| `RTSP_USERNAME` / `RTSP_PASSWORD` | Credentials for RTSP Digest Authentication (RFC 2326 §17 / RFC 2617) — required on every RTSP request except `OPTIONS` |
+| `SIGNALING_TOKEN` | Pre-shared token required as a `?token=...` query parameter on the WebSocket signaling handshake |
+
+See `roadmap.md`'s Phase 23 breakdown (23.1-23.6) and `docs-security-threat-model.md` for why each of these exists and the mechanism behind it.
+
 ```bash
-./build/camera_app [control_port] [rtsp_port]
+export CAMERA_CONTROL_SECRET="choose-a-real-secret"
+export RTSP_USERNAME="admin"
+export RTSP_PASSWORD="choose-a-real-password"
+export SIGNALING_TOKEN="choose-a-real-token"
+
+./build/camera_app [control_port] [rtsp_port] [signaling_port]
 ```
 
 - `control_port` — UDP port this sender listens on for keyframe-request/bitrate-feedback datagrams from a receiver (default: `5005`)
 - `rtsp_port` — TCP port the RTSP server listens on (default: `8554`)
+- `signaling_port` — TCP port the WebRTC signaling (WebSocket) server listens on (default: `8765`)
 
 Example:
 
 ```bash
-./build/camera_app 5005 8554
+./build/camera_app 5005 8554 8765
 ```
 
-The app initializes hardware (camera, encoder) and pools/queues up front, then **starts the RTSP server and waits** — it does not stream to anyone until a client actually sends `PLAY`. Connect with any RTSP client, e.g.:
+The app initializes hardware (camera, encoder) and pools/queues up front, then **starts the RTSP server and waits** — it does not stream to anyone until a client actually sends `PLAY`. Connect with any RTSP client that supports Digest Authentication, e.g.:
 
 ```bash
-ffplay rtsp://<pi-ip>:8554/stream
+ffplay rtsp://admin:choose-a-real-password@<pi-ip>:8554/stream
 ```
 
 `PipelineController` lazily starts the capture→encode→packetize→send chain on the first `PLAY` (ref-counted, so it stays running while any client is watching) and stops it again once the last client `TEARDOWN`s or is reaped as an orphan (~60s of inactivity, no keepalive). `DESCRIBE` returns a real SDP built from the encoder's actual cached SPS/PPS — see `roadmap.md`'s Phase 20 entry for how that's primed if `DESCRIBE` arrives before anyone has ever played.
 
 The app streams until you press **ENTER** (or the RTSP server is stopped), at which point it shuts down every stage in producer → consumer order.
+
+`camera_receiver` similarly requires `CAMERA_CONTROL_SECRET` (matching the value above) before it will start.
 
 ## Project layout
 
@@ -135,7 +153,7 @@ roadmap.md         Phase-by-phase status and implementation evidence (source of 
 
 ## Roadmap
 
-See [`roadmap.md`](./roadmap.md) for the full 25-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. Current focus: real-hardware validation — RTSP (Phase 20 steps 4-6) and WebRTC (Phase 22) with an actual CSI camera on the Pi — plus, in order, Security for external-network access (Phase 23) followed by Remote/WAN access via Tailscale (Phase 24).
+See [`roadmap.md`](./roadmap.md) for the full 25-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. **Phase 23 (Security for external-network access)** is also done — see `roadmap.md`'s Phase 23 breakdown (23.1-23.6) for the threat model and what each of the four auth mechanisms covers. Current focus: real-hardware validation — RTSP (Phase 20 steps 4-6) and WebRTC (Phase 22) with an actual CSI camera on the Pi — plus Remote/WAN access via Tailscale (Phase 24), built on top of Phase 23's authentication.
 
 ## Design notes
 
