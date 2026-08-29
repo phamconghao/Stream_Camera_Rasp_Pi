@@ -337,6 +337,26 @@ int main(int argc, char **argv)
     }
     std::string control_secret(control_secret_env);
 
+    // PHASE 23.3: RTSP Digest Authentication credentials - same
+    // fail-closed reasoning as CAMERA_CONTROL_SECRET above (env var,
+    // not argv; required, no built-in default). Checked here,
+    // alongside the control-channel secret, so the process fails fast
+    // before allocating any pipeline/thread resources rather than
+    // partway through startup.
+    const char *rtsp_username_env = std::getenv("RTSP_USERNAME");
+    const char *rtsp_password_env = std::getenv("RTSP_PASSWORD");
+    if (rtsp_username_env == nullptr || rtsp_username_env[0] == '\0' ||
+        rtsp_password_env == nullptr || rtsp_password_env[0] == '\0')
+    {
+        std::cerr << "RTSP_USERNAME and RTSP_PASSWORD environment variables must both be set "
+                     "(credentials for RTSP Digest Authentication, see "
+                     "docs-security-threat-model.md) - refusing to start with no "
+                     "authentication on the RTSP server.\n";
+        return -1;
+    }
+    std::string rtsp_username(rtsp_username_env);
+    std::string rtsp_password(rtsp_password_env);
+
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
     // independent running flag for start/stop, so they can be controlled
@@ -365,7 +385,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    if (rtsp_server_start(rtsp_port) < 0)
+    if (rtsp_server_start(rtsp_port, rtsp_username, rtsp_password) < 0)
     {
         return -1;
     }

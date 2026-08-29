@@ -7,11 +7,17 @@
 #include <cerrno>
 #include <atomic>
 #include <sstream>
+#include <algorithm>
+#include <map>
+#include <cctype>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/crypto.h>
 
 #include "rtsp_message.h"
 #include "rtsp_session_registry.h"
@@ -29,6 +35,18 @@ static pthread_t g_reaper_thread;
 static std::atomic<bool> g_running(false);
 
 static constexpr int REAPER_INTERVAL_SEC = 10;
+
+// PHASE 23.3: RTSP Digest Authentication (RFC 2326 section 17 / RFC
+// 2617) credentials - one fixed username/password pair, set once at
+// startup (see rtsp_server_start()) from main.cpp's required
+// RTSP_USERNAME/RTSP_PASSWORD env vars. See
+// docs-security-threat-model.md section 1.3 for why Digest (not
+// Basic, not a custom scheme) was chosen: every real RTSP client
+// (ffplay, VLC, browsers via rtsp://user:pass@host) already speaks it,
+// and it never puts the password itself on the wire.
+static std::string g_rtsp_username;
+static std::string g_rtsp_password;
+static const char *RTSP_REALM = "rpi-camera";
 
 // Advertised in the SETUP response's Transport header's server_port
 // field (RFC 2326 section 12.39) - clients generally only use this
@@ -106,6 +124,200 @@ static bool parse_client_port_range(const std::string &transport, uint16_t *out_
     *out_rtp = static_cast<uint16_t>(rtp);
     *out_rtcp = static_cast<uint16_t>(rtcp);
     return true;
+}
+
+/**
+ * PHASE 23.3 helpers: RFC 2617 Digest Authentication.
+ *
+ * Deliberately the classic RFC 2069/2617 "no qop" flavor (HA1:nonce:HA2,
+ * no nonce-count/cnonce) rather than qop=auth - every RTSP client this
+ * project targets (ffplay, VLC, browsers via rtsp://user:pass@host)
+ * supports this flavor, and the added replay protection qop=auth's
+ * nonce-count gives isn't worth the extra server-side state (tracking
+ * used nonce-counts per nonce) for a single-realm, single-credential,
+ * LAN/VPN-only (Phase 24) server. See the nonce lifetime note on
+ * connection_thread_func() below for the actual replay-protection
+ * story this implementation relies on instead.
+ */
+
+static std::string md5_hex(const std::string &input)
+{
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_md5(), nullptr);
+    EVP_DigestUpdate(ctx, input.data(), input.size());
+    EVP_DigestFinal_ex(ctx, digest, &digest_len);
+    EVP_MD_CTX_free(ctx);
+
+    static const char *HEX = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(digest_len * 2);
+    for (unsigned int i = 0; i < digest_len; i++)
+    {
+        hex += HEX[(digest[i] >> 4) & 0x0F];
+        hex += HEX[digest[i] & 0x0F];
+    }
+
+    return hex;
+}
+
+// 16 random bytes (OpenSSL RAND_bytes, cryptographically secure) as 32
+// lowercase hex chars - one of these is generated per TCP connection
+// (see connection_thread_func()) and used for every Digest challenge
+// issued on that connection.
+static std::string generate_nonce_hex(void)
+{
+    unsigned char raw[16];
+    if (RAND_bytes(raw, sizeof(raw)) != 1)
+    {
+        // Should be unreachable on any real OpenSSL build/platform,
+        // but if the CSPRNG genuinely has no entropy available, fail
+        // loudly rather than silently handing out a predictable/empty
+        // nonce - an attacker who can predict the nonce can precompute
+        // a valid Digest response without ever seeing a real challenge.
+        LOG_ERROR(TAG, "RAND_bytes failed generating RTSP Digest nonce - refusing to serve this connection");
+        return "";
+    }
+
+    static const char *HEX = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(sizeof(raw) * 2);
+    for (unsigned char b : raw)
+    {
+        hex += HEX[(b >> 4) & 0x0F];
+        hex += HEX[b & 0x0F];
+    }
+
+    return hex;
+}
+
+// Parses `Digest key1="value1", key2="value2", ...` (the part of the
+// Authorization header after the "Digest " prefix) into a map. Assumes
+// well-formed, unescaped quoted-string values (no embedded quotes or
+// commas) - true of every real RTSP/HTTP Digest client, and a
+// malformed/unparseable header just yields missing keys, which
+// check_digest_auth() below already treats as a failed auth attempt.
+static std::map<std::string, std::string> parse_digest_params(const std::string &s)
+{
+    std::map<std::string, std::string> params;
+    size_t pos = 0;
+
+    while (pos < s.size())
+    {
+        size_t eq = s.find('=', pos);
+        if (eq == std::string::npos)
+        {
+            break;
+        }
+
+        std::string key = s.substr(pos, eq - pos);
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t") + 1);
+
+        size_t value_start = eq + 1;
+        std::string value;
+        if (value_start < s.size() && s[value_start] == '"')
+        {
+            size_t close_quote = s.find('"', value_start + 1);
+            if (close_quote == std::string::npos)
+            {
+                break;
+            }
+            value = s.substr(value_start + 1, close_quote - value_start - 1);
+            pos = s.find(',', close_quote);
+        }
+        else
+        {
+            size_t comma = s.find(',', value_start);
+            value = s.substr(value_start, comma == std::string::npos ? std::string::npos : comma - value_start);
+            pos = comma;
+        }
+
+        params[key] = value;
+
+        if (pos == std::string::npos)
+        {
+            break;
+        }
+        pos++; // skip the comma
+    }
+
+    return params;
+}
+
+// Verifies req's Authorization header against g_rtsp_username/
+// g_rtsp_password for this exact request's method+URI, and against
+// `connection_nonce` - the one nonce this TCP connection's most recent
+// challenge (or its first-ever challenge) handed out. A response
+// computed for a different nonce (e.g. replayed from a previous,
+// already-torn-down connection) is rejected, not just a wrong
+// password - see connection_thread_func() for why binding to the
+// connection is the relevant protection here rather than a
+// server-side nonce store with expiry.
+static bool check_digest_auth(const rtsp_request_t &req, const std::string &connection_nonce)
+{
+    std::string auth_header = rtsp_header_get(req, "Authorization");
+    if (auth_header.empty())
+    {
+        return false;
+    }
+
+    static const std::string DIGEST_PREFIX = "Digest ";
+    if (auth_header.compare(0, DIGEST_PREFIX.size(), DIGEST_PREFIX) != 0)
+    {
+        return false;
+    }
+
+    std::map<std::string, std::string> params = parse_digest_params(auth_header.substr(DIGEST_PREFIX.size()));
+
+    std::string username = params["username"];
+    std::string realm = params["realm"];
+    std::string nonce = params["nonce"];
+    std::string uri = params["uri"];
+    std::string response = params["response"];
+
+    if (username.empty() || realm.empty() || nonce.empty() || uri.empty() || response.empty())
+    {
+        return false;
+    }
+
+    // Username/realm/nonce aren't secrets - a plain compare (not
+    // constant-time) is fine for them. Only `response` below (derived
+    // from the password) needs constant-time comparison.
+    if (username != g_rtsp_username || realm != RTSP_REALM || nonce != connection_nonce)
+    {
+        return false;
+    }
+
+    std::string ha1 = md5_hex(username + ":" + std::string(RTSP_REALM) + ":" + g_rtsp_password);
+    std::string ha2 = md5_hex(req.method + ":" + uri);
+    std::string expected = md5_hex(ha1 + ":" + nonce + ":" + ha2);
+
+    std::string response_lower = response;
+    std::transform(response_lower.begin(), response_lower.end(), response_lower.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (expected.size() != response_lower.size())
+    {
+        return false;
+    }
+
+    return CRYPTO_memcmp(expected.data(), response_lower.data(), expected.size()) == 0;
+}
+
+static rtsp_response_t build_unauthorized_response(const std::string &nonce)
+{
+    rtsp_response_t resp;
+    resp.status_code = 401;
+    resp.status_text = "Unauthorized";
+
+    std::ostringstream www_authenticate;
+    www_authenticate << "Digest realm=\"" << RTSP_REALM << "\", nonce=\"" << nonce << "\", algorithm=MD5";
+    resp.headers["WWW-Authenticate"] = www_authenticate.str();
+
+    return resp;
 }
 
 static rtsp_response_t handle_options(const rtsp_request_t &req)
@@ -321,8 +533,32 @@ static rtsp_response_t handle_teardown(const rtsp_request_t &req)
     return resp;
 }
 
-static rtsp_response_t dispatch(const rtsp_request_t &req, const std::string &client_ip)
+static rtsp_response_t dispatch(const rtsp_request_t &req, const std::string &client_ip, const std::string &connection_nonce)
 {
+    // PHASE 23.3: every method except OPTIONS requires Digest auth -
+    // OPTIONS itself stays open so a client can discover the server is
+    // alive and which methods it supports before it has credentials to
+    // present (matches common RTSP server behavior - see
+    // docs-security-threat-model.md section 1.3). TEARDOWN is
+    // deliberately included even though the original Phase 23.3 plan
+    // only called out SETUP/PLAY/DESCRIBE - rtsp_session_registry's
+    // session IDs turned out to be an 8-hex-digit *monotonic counter*
+    // (see rtsp_session_registry.cpp), not a random/unguessable token,
+    // so relying on "knows the Session ID" as proof of anything would
+    // let an attacker enumerate and TEARDOWN arbitrary sessions. The
+    // same reasoning is why this checks auth on every single request
+    // rather than the session-scoped "authenticate once at SETUP, then
+    // trust the Session header" scheme the roadmap originally sketched.
+    if (req.method != "OPTIONS" && !check_digest_auth(req, connection_nonce))
+    {
+        LOG_WARN(TAG, "%s %s from %s: missing/invalid Digest credentials - challenging",
+                 req.method.c_str(), req.uri.c_str(), client_ip.c_str());
+
+        rtsp_response_t resp = build_unauthorized_response(connection_nonce);
+        resp.headers["CSeq"] = rtsp_header_get(req, "CSeq");
+        return resp;
+    }
+
     rtsp_response_t resp;
 
     if (req.method == "OPTIONS")
@@ -371,6 +607,25 @@ static void *connection_thread_func(void *arg)
 
     LOG_INFO(TAG, "connection from %s", client_ip.c_str());
 
+    // PHASE 23.3: one Digest nonce for this connection's entire
+    // lifetime, reused across every challenge/request on it (RFC
+    // 2069/2617-style nonce reuse - see check_digest_auth()'s comment
+    // above for why this is an accepted trade-off here rather than a
+    // fresh nonce per challenge with server-side expiry tracking).
+    // Binding it to the connection is what actually matters: a
+    // response computed against this nonce is meaningless replayed on
+    // any other connection, since that connection has - and will only
+    // ever challenge with - a different, independently random nonce.
+    std::string nonce = generate_nonce_hex();
+    if (nonce.empty())
+    {
+        // generate_nonce_hex() already logged why; refuse this
+        // connection entirely rather than silently falling back to
+        // some fixed/predictable nonce.
+        close(fd);
+        return nullptr;
+    }
+
     std::string buffer;
     char chunk[2048];
 
@@ -400,7 +655,7 @@ static void *connection_thread_func(void *arg)
 
             LOG_INFO(TAG, "%s %s from %s", req.method.c_str(), req.uri.c_str(), client_ip.c_str());
 
-            rtsp_response_t resp = dispatch(req, client_ip);
+            rtsp_response_t resp = dispatch(req, client_ip, nonce);
             std::string wire = rtsp_build_response(resp);
 
             ssize_t sent = send(fd, wire.c_str(), wire.size(), 0);
@@ -510,8 +765,11 @@ static void *reaper_thread_func(void *arg)
     return nullptr;
 }
 
-int rtsp_server_start(uint16_t port)
+int rtsp_server_start(uint16_t port, const std::string &username, const std::string &password)
 {
+    g_rtsp_username = username;
+    g_rtsp_password = password;
+
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_listen_fd < 0)
     {
@@ -587,4 +845,7 @@ void rtsp_server_stop(void)
     pthread_join(g_reaper_thread, nullptr);
 
     rtsp_session_registry_cleanup();
+
+    g_rtsp_username.clear();
+    g_rtsp_password.clear();
 }
