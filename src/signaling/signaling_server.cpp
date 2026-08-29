@@ -11,6 +11,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <openssl/crypto.h>
 
 #include "sha1.h"
 #include "base64.h"
@@ -28,6 +29,9 @@ static pthread_t g_accept_thread;
 static std::atomic<bool> g_running(false);
 static signaling_message_handler_t g_handler;
 static signaling_disconnect_handler_t g_disconnect_handler;
+
+// PHASE 23.4: see signaling_server.h's header comment.
+static std::string g_signaling_token;
 
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<std::string, int> g_clients; // client_id -> fd, for signaling_server_send()
@@ -135,6 +139,60 @@ static std::string compute_ws_accept(const std::string &client_key)
     return base64_encode(digest_vec);
 }
 
+/**
+ * PHASE 23.4: extracts the `token` query parameter from the request
+ * line (e.g. "GET /signaling?token=abc123 HTTP/1.1" -> "abc123").
+ * Deliberately a query parameter rather than a custom header - the
+ * viewer page (webrtc_test.html) uses the browser's native
+ * `new WebSocket(url)`, which has no way to attach custom headers to
+ * the handshake request; the URL itself is the only thing script code
+ * controls. `block` is the same raw request buffer
+ * do_websocket_handshake() already has (request line + headers, up to
+ * the blank line). Returns "" if there's no query string or no token
+ * parameter in it - do_websocket_handshake() already treats an empty
+ * token as a failed check, same as a wrong one.
+ */
+static std::string extract_token_from_request_line(const std::string &block)
+{
+    size_t line_end = block.find("\r\n");
+    if (line_end == std::string::npos)
+    {
+        return "";
+    }
+    std::string request_line = block.substr(0, line_end);
+
+    // "GET <path> HTTP/1.1" - the path is the middle space-delimited field.
+    size_t path_start = request_line.find(' ');
+    if (path_start == std::string::npos)
+    {
+        return "";
+    }
+    path_start++;
+    size_t path_end = request_line.find(' ', path_start);
+    if (path_end == std::string::npos)
+    {
+        return "";
+    }
+    std::string path = request_line.substr(path_start, path_end - path_start);
+
+    size_t query_start = path.find('?');
+    if (query_start == std::string::npos)
+    {
+        return "";
+    }
+    std::string query = path.substr(query_start + 1);
+
+    size_t token_pos = query.find("token=");
+    if (token_pos == std::string::npos)
+    {
+        return "";
+    }
+    token_pos += strlen("token=");
+
+    size_t token_end = query.find('&', token_pos);
+    return query.substr(token_pos, token_end == std::string::npos ? std::string::npos : token_end - token_pos);
+}
+
 // Reads the HTTP Upgrade request off `fd`, validates it's a WebSocket
 // handshake, and writes back the 101 Switching Protocols response.
 // Returns false (and leaves the socket for the caller to close) on
@@ -164,6 +222,32 @@ static bool do_websocket_handshake(int fd, const std::string &client_ip)
             LOG_WARN(TAG, "handshake request from %s too large, rejecting", client_ip.c_str());
             return false;
         }
+    }
+
+    // PHASE 23.4: checked FIRST, before any of the existing
+    // Upgrade/Sec-WebSocket-Key parsing below - this is the one point
+    // that actually matters for the DoS concern noted in
+    // docs-security-threat-model.md row (d): reject before doing any
+    // further work on a connection that isn't even going to be allowed
+    // through, rather than after. `token` isn't a WebSocket protocol
+    // concept, so a wrong/missing one gets a plain HTTP 401, not any
+    // kind of WebSocket-flavored error - the client never even
+    // resembled a legitimate handshake attempt.
+    std::string presented_token = extract_token_from_request_line(buffer);
+    bool token_ok = !presented_token.empty() &&
+                     presented_token.size() == g_signaling_token.size() &&
+                     CRYPTO_memcmp(presented_token.data(), g_signaling_token.data(), presented_token.size()) == 0;
+
+    if (!token_ok)
+    {
+        LOG_WARN(TAG, "missing/invalid signaling token from %s, rejecting", client_ip.c_str());
+
+        static const char *unauthorized_response =
+            "HTTP/1.1 401 Unauthorized\r\n"
+            "Content-Length: 0\r\n"
+            "\r\n";
+        send(fd, unauthorized_response, strlen(unauthorized_response), 0);
+        return false;
     }
 
     std::map<std::string, std::string> headers = parse_http_headers(buffer);
@@ -531,9 +615,10 @@ void signaling_server_set_disconnect_handler(signaling_disconnect_handler_t hand
     g_disconnect_handler = handler;
 }
 
-int signaling_server_start(uint16_t port, signaling_message_handler_t handler)
+int signaling_server_start(uint16_t port, const std::string &token, signaling_message_handler_t handler)
 {
     g_handler = handler;
+    g_signaling_token = token;
 
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_listen_fd < 0)
@@ -599,4 +684,6 @@ void signaling_server_stop(void)
     pthread_mutex_lock(&g_clients_lock);
     g_clients.clear();
     pthread_mutex_unlock(&g_clients_lock);
+
+    g_signaling_token.clear();
 }

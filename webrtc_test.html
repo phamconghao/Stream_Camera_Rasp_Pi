@@ -86,8 +86,8 @@
 
   <div class="card">
     <h2>Kết nối signaling server</h2>
-    <label for="wsUrl">WebSocket URL</label>
-    <input type="text" id="wsUrl" value="ws://localhost:8765">
+    <label for="wsUrl">WebSocket URL (PHASE 23.4: phải kèm <code>?token=...</code> khớp với biến môi trường <code>SIGNALING_TOKEN</code> lúc khởi động <code>camera_app</code>, nếu không server trả 401 và từ chối handshake)</label>
+    <input type="text" id="wsUrl" value="ws://localhost:8765?token=">
     <button id="btnConnect">Connect + Send Offer</button>
     <div id="connStatus" style="margin-top: 10px; font-size: 13px;">Chưa kết nối</div>
   </div>

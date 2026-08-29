@@ -357,6 +357,20 @@ int main(int argc, char **argv)
     std::string rtsp_username(rtsp_username_env);
     std::string rtsp_password(rtsp_password_env);
 
+    // PHASE 23.4: WebSocket signaling pre-shared token - same
+    // fail-closed reasoning as the two checks above. Checked here too,
+    // before any resource allocation, for the same fail-fast reason.
+    const char *signaling_token_env = std::getenv("SIGNALING_TOKEN");
+    if (signaling_token_env == nullptr || signaling_token_env[0] == '\0')
+    {
+        std::cerr << "SIGNALING_TOKEN environment variable must be set "
+                     "(pre-shared token for WebSocket signaling authentication, "
+                     "see docs-security-threat-model.md) - refusing to start "
+                     "with no authentication on the signaling server.\n";
+        return -1;
+    }
+    std::string signaling_token(signaling_token_env);
+
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
     // independent running flag for start/stop, so they can be controlled
@@ -419,7 +433,7 @@ int main(int argc, char **argv)
 
     signaling_server_set_disconnect_handler(on_signaling_disconnect);
 
-    if (signaling_server_start(signaling_port, on_signaling_message) < 0)
+    if (signaling_server_start(signaling_port, signaling_token, on_signaling_message) < 0)
     {
         return -1;
     }
