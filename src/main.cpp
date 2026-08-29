@@ -24,6 +24,7 @@
 
 #include <map>
 #include <mutex>
+#include <vector>
 
 /**
  * ============================================================================
@@ -242,23 +243,31 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     signaling_server_send(client_id, json_build_object({{"type", "answer"}, {"sdp", answer_sdp}}));
 
     // Tell the browser where to send its connectivity checks. Sent
-    // as its own message right after the answer, rather
-    // than embedded inside the answer's SDP, so this project's
-    // signaling protocol matches how trickle ICE actually works in
-    // practice (candidates as a separate, potentially repeated,
-    // message type - see signaling_server.h) even though this project
-    // only ever has exactly one candidate to send.
-    ice_candidate_t local_candidate = get_local_host_candidate(ICE_AGENT_PORT);
-    if (local_candidate.valid)
+    // as its own message right after the answer, rather than embedded
+    // inside the answer's SDP, so this project's signaling protocol
+    // matches how trickle ICE actually works in practice (candidates
+    // as a separate, potentially repeated, message type - see
+    // signaling_server.h). Phase 24.2: this project can now have more
+    // than one local interface worth advertising (e.g. LAN + a
+    // Tailscale VPN interface), so every candidate from
+    // get_local_host_candidates() is sent as its own "ice-candidate"
+    // message - the browser's ICE agent tries all of them and uses
+    // whichever pair actually connects.
+    std::vector<ice_candidate_t> local_candidates = get_local_host_candidates(ICE_AGENT_PORT);
+    if (!local_candidates.empty())
     {
-        std::string candidate_line = build_ice_candidate_line(local_candidate);
-        signaling_server_send(client_id, json_build_object({
-            {"type", "ice-candidate"},
-            {"candidate", candidate_line},
-            {"sdpMid", offer.mid},
-            {"sdpMLineIndex", "0"},
-        }));
-        LOG_INFO("MAIN", "sent ICE candidate to client %s: %s", client_id.c_str(), candidate_line.c_str());
+        for (const ice_candidate_t &local_candidate : local_candidates)
+        {
+            std::string candidate_line = build_ice_candidate_line(local_candidate);
+            signaling_server_send(client_id, json_build_object({
+                {"type", "ice-candidate"},
+                {"candidate", candidate_line},
+                {"sdpMid", offer.mid},
+                {"sdpMLineIndex", "0"},
+            }));
+            LOG_INFO("MAIN", "sent ICE candidate to client %s: %s%s", client_id.c_str(), candidate_line.c_str(),
+                     local_candidate.is_tailscale ? " (tailscale)" : " (lan)");
+        }
     }
     else
     {
