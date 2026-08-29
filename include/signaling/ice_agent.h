@@ -85,4 +85,15 @@ void ice_agent_unregister_session(const std::string &ice_ufrag);
 // this ufrag yet, or the send itself failed.
 bool ice_agent_send_to_peer(const std::string &ice_ufrag, const uint8_t *data, size_t size);
 
+// PHASE 24.4: entry point for bytes a TURN server relayed to this
+// project via a Data Indication - see turn_client.h's
+// turn_client_data_callback_t. Runs the exact same STUN connectivity
+// -check handling the direct/reflexive path uses (so ICE can nominate
+// a relay pair too), through the same session/nomination bookkeeping.
+// Wired up by main.cpp, via turn_client_set_data_callback(), once both
+// ice_agent_start() and turn_client_allocate() have succeeded -
+// ice_agent.cpp itself has no dependency on whether TURN is even
+// configured.
+void ice_agent_handle_relayed_packet(const std::string &peer_ip, uint16_t peer_port, const uint8_t *data, size_t size);
+
 #endif // __ICE_AGENT_H__

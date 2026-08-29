@@ -2,6 +2,7 @@
 
 #include <pthread.h>
 #include <atomic>
+#include <functional>
 #include <map>
 #include <cstring>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include "srtp_session.h"
 #include "bcm2835_encoder.h"
 #include "auth_failure_log.h"
+#include "turn_client.h"
 #include "log.h"
 
 static const char *TAG = "ICE_AGENT";
@@ -48,8 +50,27 @@ static std::map<std::string, std::string> g_nominated_pairs; // "ip:port" -> ice
 // far more often than they're written (once per successful STUN
 // check vs. every packet demuxed/sent), so the small duplication cost
 // is worth the simpler, more obviously-correct code on both sides.
+// PHASE 24.4: how to reach a peer for future sends - either a raw
+// socket address (direct/reflexive path, sendto() on the shared
+// socket) or a TURN relay peer identity (relay path,
+// turn_client_send_to_peer()). g_ufrag_to_route's value type used to
+// be a bare sockaddr_in before this; process_incoming_packet() and
+// ice_agent_send_to_peer() are the only things that need to know both
+// forms exist - dtls_handshake.cpp/srtp_session.cpp/webrtc_sender_thread.cpp
+// all still just deal in raw bytes via callbacks, unaware which
+// underlying path carries them.
+struct peer_route_t
+{
+    bool via_relay = false;
+    struct sockaddr_in direct_addr = {}; // valid iff !via_relay
+    std::string relay_peer_ip;           // valid iff via_relay
+    uint16_t relay_peer_port = 0;        // valid iff via_relay
+};
+
+using send_back_fn_t = std::function<void(const uint8_t *, size_t)>;
+
 static pthread_mutex_t g_ufrag_to_addr_lock = PTHREAD_MUTEX_INITIALIZER;
-static std::map<std::string, struct sockaddr_in> g_ufrag_to_addr;
+static std::map<std::string, peer_route_t> g_ufrag_to_route;
 
 // PHASE 24.3: cached result of the one-time STUN self-discovery run
 // inside ice_agent_start(), before the receive thread is spawned -
@@ -257,22 +278,30 @@ void ice_agent_unregister_session(const std::string &ice_ufrag)
     pthread_mutex_unlock(&g_nominated_pairs_lock);
 
     pthread_mutex_lock(&g_ufrag_to_addr_lock);
-    g_ufrag_to_addr.erase(ice_ufrag);
+    g_ufrag_to_route.erase(ice_ufrag);
     pthread_mutex_unlock(&g_ufrag_to_addr_lock);
 }
 
-// PHASE 22.6.2 implementation - see ice_agent.h's doc comment.
+// PHASE 22.6.2 implementation - see ice_agent.h's doc comment. PHASE
+// 24.4: routes through turn_client_send_to_peer() instead of a raw
+// sendto() when the nominated pair for this session went through the
+// TURN relay - see peer_route_t.
 bool ice_agent_send_to_peer(const std::string &ice_ufrag, const uint8_t *data, size_t size)
 {
     pthread_mutex_lock(&g_ufrag_to_addr_lock);
-    auto it = g_ufrag_to_addr.find(ice_ufrag);
-    if (it == g_ufrag_to_addr.end())
+    auto it = g_ufrag_to_route.find(ice_ufrag);
+    if (it == g_ufrag_to_route.end())
     {
         pthread_mutex_unlock(&g_ufrag_to_addr_lock);
         return false; // ICE hasn't nominated a pair for this session (yet, or ever)
     }
-    struct sockaddr_in dest_addr = it->second;
+    peer_route_t route = it->second;
     pthread_mutex_unlock(&g_ufrag_to_addr_lock);
+
+    if (route.via_relay)
+    {
+        return turn_client_send_to_peer(route.relay_peer_ip, route.relay_peer_port, data, size);
+    }
 
     if (g_socket_fd < 0)
     {
@@ -280,7 +309,7 @@ bool ice_agent_send_to_peer(const std::string &ice_ufrag, const uint8_t *data, s
     }
 
     ssize_t sent = sendto(g_socket_fd, data, size, 0,
-                           reinterpret_cast<const struct sockaddr *>(&dest_addr), sizeof(dest_addr));
+                           reinterpret_cast<const struct sockaddr *>(&route.direct_addr), sizeof(route.direct_addr));
 
     return sent >= 0;
 }
@@ -407,6 +436,181 @@ static bool is_keyframe_request(const uint8_t *data, size_t size)
     return (payload_type == 206) && (fmt == 1 || fmt == 4); // PSFB + (PLI or FIR)
 }
 
+static std::string route_key(const std::string &ip, uint16_t port, bool via_relay)
+{
+    // "relay:" prefix keeps a relay-sourced key from ever colliding
+    // with a direct one that happens to share the same literal
+    // ip:port (the TURN server's own relay socket and some LAN device
+    // could coincidentally share an address/port in the general case,
+    // even though it won't happen on this project's actual test
+    // setup) - cheap insurance, not a scenario this project has hit.
+    return (via_relay ? "relay:" : "") + make_addr_key(ip, port);
+}
+
+// PHASE 24.4: the STUN/DTLS/SRTCP handling that used to be inline in
+// ice_agent_thread_func()'s loop body, factored out so the exact same
+// logic runs for BOTH the direct/reflexive path (this project's own
+// shared UDP socket) and the relay path (bytes arriving via a TURN
+// Data Indication, unwrapped by turn_client.cpp and handed to
+// ice_agent_handle_relayed_packet() below) - the classification,
+// session lookup, MESSAGE-INTEGRITY check, and nomination bookkeeping
+// are identical either way; only HOW a response gets sent back
+// (`send_back`) and WHAT identifies "this sender" for nomination
+// bookkeeping (`route`) differ.
+static void process_incoming_packet(
+    const uint8_t *buffer, size_t n,
+    const std::string &sender_ip, uint16_t sender_port,
+    const peer_route_t &route,
+    const send_back_fn_t &send_back)
+{
+    packet_kind_t kind = classify_packet(buffer, n);
+
+    if (kind == packet_kind_t::DTLS)
+    {
+        std::string key = route_key(sender_ip, sender_port, route.via_relay);
+
+        pthread_mutex_lock(&g_nominated_pairs_lock);
+        auto pair_it = g_nominated_pairs.find(key);
+        bool found = (pair_it != g_nominated_pairs.end());
+        std::string ufrag = found ? pair_it->second : "";
+        pthread_mutex_unlock(&g_nominated_pairs_lock);
+
+        if (!found)
+        {
+            LOG_WARN(TAG, "DTLS packet from unrecognized %s%s:%u (no successful ICE check yet), ignoring",
+                     route.via_relay ? "relay peer " : "", sender_ip.c_str(), sender_port);
+            return;
+        }
+
+        dtls_handshake_on_packet(ufrag, buffer, n, send_back);
+        return;
+    }
+
+    if (kind == packet_kind_t::SRTCP)
+    {
+        std::string key = route_key(sender_ip, sender_port, route.via_relay);
+
+        pthread_mutex_lock(&g_nominated_pairs_lock);
+        auto pair_it = g_nominated_pairs.find(key);
+        bool found = (pair_it != g_nominated_pairs.end());
+        std::string ufrag = found ? pair_it->second : "";
+        pthread_mutex_unlock(&g_nominated_pairs_lock);
+
+        if (!found)
+        {
+            return; // expected race (handshake still in progress) - see original comment, unchanged
+        }
+
+        std::vector<uint8_t> mutable_buf(buffer, buffer + n); // srtp_session_unprotect_rtcp() decrypts in place
+        int len = static_cast<int>(n);
+        bool ok = srtp_session_unprotect_rtcp(ufrag, mutable_buf.data(), mutable_buf.size(), &len);
+        if (!ok)
+        {
+            return;
+        }
+
+        LOG_INFO(TAG, "SRTCP feedback from %s%s:%u (ufrag=%s): %s",
+                 route.via_relay ? "relay peer " : "", sender_ip.c_str(), sender_port, ufrag.c_str(),
+                 describe_rtcp_feedback(mutable_buf.data(), static_cast<size_t>(len)));
+
+        if (is_keyframe_request(mutable_buf.data(), static_cast<size_t>(len)))
+        {
+            LOG_INFO(TAG, "keyframe requested via SRTCP feedback (ufrag=%s) - forcing IDR on next frame", ufrag.c_str());
+            bcm2835_encoder_force_keyframe();
+        }
+
+        return;
+    }
+
+    if (kind != packet_kind_t::STUN)
+    {
+        return; // neither STUN, DTLS, nor SRTCP - stray/malformed traffic, ignore silently
+    }
+
+    // PHASE 24.3: this port (direct path) or the TURN relay (24.4) is
+    // now expected to be reachable from the public internet, not just
+    // LAN/Tailscale - so, like RTSP and WebSocket signaling already
+    // do, check for a standing block BEFORE doing any further work on
+    // this source IP. Applies to the relay path too (sender_ip there
+    // is the ORIGINAL peer's IP as reported by the TURN server's Data
+    // Indication - still exactly what should be rate-limited against,
+    // TURN itself is just a pass-through for this purpose).
+    if (auth_failure_is_blocked("ICE", sender_ip))
+    {
+        return;
+    }
+
+    stun_parsed_message_t parsed = parse_stun_message(buffer, n);
+    if (!parsed.valid || parsed.message_type != STUN_BINDING_REQUEST)
+    {
+        return; // not a well-formed STUN Binding Request - ignore silently, could be stray non-STUN traffic
+    }
+
+    std::string local_pwd;
+    if (!lookup_local_pwd(parsed.username, local_pwd))
+    {
+        auth_failure_log("ICE", sender_ip, "unknown ICE session (unrecognized ufrag)");
+        LOG_WARN(TAG, "STUN request for unknown session (username=%s), ignoring", parsed.username.c_str());
+        return;
+    }
+
+    if (!parsed.has_message_integrity || !stun_verify_message_integrity(buffer, n, local_pwd))
+    {
+        // Wrong/missing MESSAGE-INTEGRITY: either a stale ice_pwd
+        // (session was re-negotiated) or - the actual reason this
+        // check exists - a request that didn't genuinely come from
+        // the peer this project exchanged credentials with over
+        // signaling. Either way, no response, since responding would
+        // help an attacker probe for valid sessions.
+        auth_failure_log("ICE", sender_ip, "STUN MESSAGE-INTEGRITY check failed");
+        LOG_WARN(TAG, "STUN request failed MESSAGE-INTEGRITY check (username=%s)", parsed.username.c_str());
+        return;
+    }
+
+    std::vector<uint8_t> response = build_stun_binding_response(
+        parsed.transaction_id, sender_ip, sender_port, local_pwd);
+
+    send_back(response.data(), response.size());
+
+    LOG_INFO(TAG, "answered STUN Binding Request from %s%s:%u (username=%s)",
+             route.via_relay ? "relay peer " : "", sender_ip.c_str(), sender_port, parsed.username.c_str());
+
+    // This successful check nominates this pair - the local ufrag
+    // identified by USERNAME's first token (see lookup_local_pwd()'s
+    // comment) is now associated with this exact route for any
+    // future DTLS/SRTP traffic.
+    std::string local_ufrag = parsed.username.substr(0, parsed.username.find(':'));
+    std::string key = route_key(sender_ip, sender_port, route.via_relay);
+
+    pthread_mutex_lock(&g_nominated_pairs_lock);
+    g_nominated_pairs[key] = local_ufrag;
+    pthread_mutex_unlock(&g_nominated_pairs_lock);
+
+    pthread_mutex_lock(&g_ufrag_to_addr_lock);
+    g_ufrag_to_route[local_ufrag] = route;
+    pthread_mutex_unlock(&g_ufrag_to_addr_lock);
+}
+
+// PHASE 24.4: entry point for bytes the TURN server relayed to this
+// project via a Data Indication (turn_client.cpp's data callback -
+// wired up by main.cpp once both ice_agent_start() and
+// turn_client_allocate() have succeeded). Builds a relay route/send_back
+// and runs the exact same STUN/DTLS/SRTCP handling the direct path
+// uses - see process_incoming_packet()'s comment.
+void ice_agent_handle_relayed_packet(const std::string &peer_ip, uint16_t peer_port, const uint8_t *data, size_t size)
+{
+    peer_route_t route;
+    route.via_relay = true;
+    route.relay_peer_ip = peer_ip;
+    route.relay_peer_port = peer_port;
+
+    send_back_fn_t send_back = [peer_ip, peer_port](const uint8_t *reply_data, size_t reply_size) {
+        turn_client_send_to_peer(peer_ip, peer_port, reply_data, reply_size);
+    };
+
+    process_incoming_packet(data, size, peer_ip, peer_port, route, send_back);
+}
+
 static void *ice_agent_thread_func(void *arg)
 {
     (void)arg;
@@ -431,180 +635,23 @@ static void *ice_agent_thread_func(void *arg)
             continue;
         }
 
-        char sender_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &sender_addr.sin_addr, sender_ip, sizeof(sender_ip));
+        char sender_ip_buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sender_addr.sin_addr, sender_ip_buf, sizeof(sender_ip_buf));
+        std::string sender_ip = sender_ip_buf;
         uint16_t sender_port = ntohs(sender_addr.sin_port);
 
-        packet_kind_t kind = classify_packet(buffer, static_cast<size_t>(n));
+        peer_route_t route;
+        route.via_relay = false;
+        route.direct_addr = sender_addr;
 
-        if (kind == packet_kind_t::DTLS)
-        {
-            // Not STUN at all - demux by the source address this
-            // packet arrived from, per the nominated-pair table
-            // populated below once that address's STUN check
-            // succeeded (see the STUN success path further down).
-            std::string addr_key = make_addr_key(sender_ip, sender_port);
+        int socket_fd = g_socket_fd;
+        struct sockaddr_in dest_addr = sender_addr;
+        socklen_t dest_len = addr_len;
+        send_back_fn_t send_back = [socket_fd, dest_addr, dest_len](const uint8_t *data, size_t size) {
+            sendto(socket_fd, data, size, 0, reinterpret_cast<const struct sockaddr *>(&dest_addr), dest_len);
+        };
 
-            pthread_mutex_lock(&g_nominated_pairs_lock);
-            auto pair_it = g_nominated_pairs.find(addr_key);
-            bool found = (pair_it != g_nominated_pairs.end());
-            std::string ufrag = found ? pair_it->second : "";
-            pthread_mutex_unlock(&g_nominated_pairs_lock);
-
-            if (!found)
-            {
-                LOG_WARN(TAG, "DTLS packet from unrecognized address %s:%u (no successful ICE check yet), ignoring",
-                         sender_ip, sender_port);
-                continue;
-            }
-
-            // send_fn captures the socket fd and this specific sender
-            // address by value - dtls_handshake.cpp calls this to send
-            // handshake bytes back to exactly this peer, without ever
-            // needing to know this project uses sockets/sockaddr at all.
-            int socket_fd = g_socket_fd;
-            struct sockaddr_in dest_addr = sender_addr;
-            socklen_t dest_len = addr_len;
-
-            dtls_handshake_on_packet(ufrag, buffer, static_cast<size_t>(n),
-                [socket_fd, dest_addr, dest_len](const uint8_t *data, size_t size) {
-                    sendto(socket_fd, data, size, 0,
-                           reinterpret_cast<const struct sockaddr *>(&dest_addr), dest_len);
-                });
-
-            continue;
-        }
-
-        if (kind == packet_kind_t::SRTCP)
-        {
-            // Encrypted RTCP feedback (NACK/PLI) from the browser -
-            // only meaningful once that address's DTLS handshake has
-            // actually completed (srtp_session_create() runs at the
-            // end of dtls_handshake.cpp's handshake thread, see
-            // dtls_handshake_is_connected()), so this can legitimately
-            // arrive before that and should be dropped quietly rather
-            // than logged as a warning - it's an expected race, not a
-            // bug, and browsers do occasionally send RTCP a little
-            // eagerly relative to when the handshake thread finishes.
-            std::string addr_key = make_addr_key(sender_ip, sender_port);
-
-            pthread_mutex_lock(&g_nominated_pairs_lock);
-            auto pair_it = g_nominated_pairs.find(addr_key);
-            bool found = (pair_it != g_nominated_pairs.end());
-            std::string ufrag = found ? pair_it->second : "";
-            pthread_mutex_unlock(&g_nominated_pairs_lock);
-
-            if (!found)
-            {
-                continue;
-            }
-
-            int len = static_cast<int>(n);
-            bool ok = srtp_session_unprotect_rtcp(ufrag, buffer, sizeof(buffer), &len);
-            if (!ok)
-            {
-                // Either no SRTP session yet for this ufrag (handshake
-                // still in progress - see comment above) or a genuine
-                // auth failure (corrupted/replayed/forged packet,
-                // rejected by libsrtp2's own auth tag check - see
-                // srtp_session.cpp). Either way, nothing more to do
-                // with it.
-                continue;
-            }
-
-            LOG_INFO(TAG, "SRTCP feedback from %s:%u (ufrag=%s): %s",
-                     sender_ip, sender_port, ufrag.c_str(), describe_rtcp_feedback(buffer, static_cast<size_t>(len)));
-
-            // PLI/FIR force a keyframe - see is_keyframe_request()'s
-            // comment for why NACK is deliberately excluded (this
-            // project has nothing to retransmit in response to one).
-            // This affects the SAME shared hardware encoder every
-            // viewer (RTSP and every other WebRTC session) pulls
-            // frames from - one WebRTC viewer's PLI benefits everyone
-            // currently watching, same
-            // as a keyframe requested via the legacy RTSP control
-            // channel already does.
-            if (is_keyframe_request(buffer, static_cast<size_t>(len)))
-            {
-                LOG_INFO(TAG, "keyframe requested via SRTCP feedback (ufrag=%s) - forcing IDR on next frame", ufrag.c_str());
-                bcm2835_encoder_force_keyframe();
-            }
-
-            continue;
-        }
-
-        if (kind != packet_kind_t::STUN)
-        {
-            continue; // neither STUN nor DTLS - stray/malformed UDP traffic, ignore silently
-        }
-
-        // PHASE 24.3: this port is now expected to be reachable from
-        // the public internet (see roadmap.md's Phase 24 direction
-        // change), not just LAN/Tailscale - so, like RTSP and
-        // WebSocket signaling already do, check for a standing block
-        // BEFORE doing any further work on this source IP. A blocked
-        // IP's packets are dropped silently here, same as any other
-        // rejected STUN request (see the MESSAGE-INTEGRITY failure
-        // path below) - no response either way, so a blocked attacker
-        // learns nothing new by continuing to send.
-        if (auth_failure_is_blocked("ICE", sender_ip))
-        {
-            continue;
-        }
-
-        stun_parsed_message_t parsed = parse_stun_message(buffer, static_cast<size_t>(n));
-        if (!parsed.valid || parsed.message_type != STUN_BINDING_REQUEST)
-        {
-            continue; // not a well-formed STUN Binding Request - ignore silently, could be stray non-STUN UDP traffic
-        }
-
-        std::string local_pwd;
-        if (!lookup_local_pwd(parsed.username, local_pwd))
-        {
-            auth_failure_log("ICE", sender_ip, "unknown ICE session (unrecognized ufrag)");
-            LOG_WARN(TAG, "STUN request for unknown session (username=%s), ignoring", parsed.username.c_str());
-            continue;
-        }
-
-        if (!parsed.has_message_integrity ||
-            !stun_verify_message_integrity(buffer, static_cast<size_t>(n), local_pwd))
-        {
-            // Wrong/missing MESSAGE-INTEGRITY: either a stale
-            // ice_pwd (session was re-negotiated) or - the actual
-            // reason this check exists - a request that didn't
-            // genuinely come from the peer this project exchanged
-            // credentials with over signaling. Either way, no
-            // response, since responding would help an attacker
-            // probe for valid sessions.
-            auth_failure_log("ICE", sender_ip, "STUN MESSAGE-INTEGRITY check failed");
-            LOG_WARN(TAG, "STUN request failed MESSAGE-INTEGRITY check (username=%s)", parsed.username.c_str());
-            continue;
-        }
-
-        std::vector<uint8_t> response = build_stun_binding_response(
-            parsed.transaction_id, sender_ip, sender_port, local_pwd);
-
-        sendto(g_socket_fd, response.data(), response.size(), 0,
-               reinterpret_cast<struct sockaddr *>(&sender_addr), addr_len);
-
-        LOG_INFO(TAG, "answered STUN Binding Request from %s:%u (username=%s)",
-                 sender_ip, sender_port, parsed.username.c_str());
-
-        // This successful check nominates this pair - the local ufrag
-        // identified by USERNAME's first token (see lookup_local_pwd()'s
-        // comment) is now associated with this exact source address
-        // for any future DTLS/SRTP traffic.
-        std::string local_ufrag = parsed.username.substr(0, parsed.username.find(':'));
-        std::string addr_key = make_addr_key(sender_ip, sender_port);
-
-        pthread_mutex_lock(&g_nominated_pairs_lock);
-        g_nominated_pairs[addr_key] = local_ufrag;
-        pthread_mutex_unlock(&g_nominated_pairs_lock);
-
-        // Reverse-direction map, same nomination event.
-        pthread_mutex_lock(&g_ufrag_to_addr_lock);
-        g_ufrag_to_addr[local_ufrag] = sender_addr;
-        pthread_mutex_unlock(&g_ufrag_to_addr_lock);
+        process_incoming_packet(buffer, static_cast<size_t>(n), sender_ip, sender_port, route, send_back);
     }
 
     LOG_INFO(TAG, "listener thread exit");

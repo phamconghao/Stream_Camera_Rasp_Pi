@@ -6,8 +6,8 @@
 #include <vector>
 
 /**
- * Local (host) and server-reflexive ICE candidate generation. No
- * relay (TURN) candidates yet - that's Phase 24.4.
+ * Local (host), server-reflexive, and (Phase 24.4) relay ICE
+ * candidate generation.
  *
  * Phase 24.2: every non-loopback IPv4 interface found is returned as
  * its own HOST candidate (RFC 8839 section 5.1.1) (typically
@@ -23,12 +23,18 @@
  * reach the Pi at all from outside its NAT (subject to the NAT's
  * filtering behavior; see roadmap.md's Phase 24.5 for the router-side
  * forwarding that makes this reliable rather than best-effort).
+ *
+ * Phase 24.4: adds a RELAY candidate (RFC 8839 section 5.1.1, `typ
+ * relay`) built from a TURN-allocated relay address (turn_client.h) -
+ * the last-resort path for NATs where even the reflexive candidate
+ * doesn't work (e.g. symmetric NAT).
  */
 
 enum class ice_candidate_kind_t
 {
     HOST,
     SERVER_REFLEXIVE,
+    RELAY,
 };
 
 struct ice_candidate_t
@@ -94,6 +100,17 @@ bool ice_candidate_is_tailscale_ip(const std::string &ip_str);
 ice_candidate_t make_server_reflexive_candidate(
     const std::string &public_ip, uint16_t public_port,
     const std::string &base_ip, uint16_t base_port);
+
+// Builds a single relay candidate (RFC 8839 section 5.1.1, `typ
+// relay`) from a TURN-allocated relay address (Phase 24.4 -
+// turn_client.h's turn_client_get_relay_address()). `base_ip`/
+// `base_port` here means the TURN server's own address that the
+// allocation was made through, per RFC 8839 section 5.1's raddr/rport
+// - NOT this project's own address the way it is for a
+// server-reflexive candidate.
+ice_candidate_t make_relay_candidate(
+    const std::string &relay_ip, uint16_t relay_port,
+    const std::string &turn_server_ip, uint16_t turn_server_port);
 
 // Formats an ice_candidate_t as an SDP/trickle-ICE "candidate:" line
 // per RFC 8839 section 5.1 - e.g.

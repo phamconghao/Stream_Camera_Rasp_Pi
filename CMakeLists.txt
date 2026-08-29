@@ -126,6 +126,7 @@ set(SOURCES
     src/signaling/ice_candidate.cpp
     src/signaling/stun_message.cpp
     src/signaling/ice_agent.cpp
+    src/signaling/turn_client.cpp
     src/signaling/dtls_handshake.cpp
     src/signaling/srtp_session.cpp
     src/signaling/webrtc_media_registry.cpp

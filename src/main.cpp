@@ -16,6 +16,7 @@
 #include "ice_credentials.h"
 #include "ice_candidate.h"
 #include "ice_agent.h"
+#include "turn_client.h"
 #include "dtls_handshake.h"
 #include "srtp_session.h"
 #include "sps_pps_cache.h"
@@ -25,6 +26,7 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include <sstream>
 
 /**
  * ============================================================================
@@ -268,6 +270,26 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
             public_address.base_ip, public_address.base_port));
     }
 
+    // Phase 24.4: append a relay candidate too, if turn_client_allocate()
+    // succeeded at startup - the last-resort path for NATs neither a
+    // host nor a server-reflexive candidate can get through.
+    turn_relay_address_t relay_address;
+    if (turn_client_get_relay_address(relay_address))
+    {
+        // TURN's own server address, not this project's - see
+        // ice_candidate.h's make_relay_candidate() doc comment on what
+        // raddr/rport mean for a relay candidate specifically. Only
+        // known here as "whatever host:port env vars pointed at",
+        // hence the getenv() re-read rather than threading it through
+        // turn_client's own state.
+        const char *turn_host = getenv("TURN_SERVER_HOST");
+        const char *turn_port_str = getenv("TURN_SERVER_PORT");
+        local_candidates.push_back(make_relay_candidate(
+            relay_address.ip, relay_address.port,
+            turn_host != nullptr ? turn_host : "",
+            turn_port_str != nullptr ? static_cast<uint16_t>(atoi(turn_port_str)) : 0));
+    }
+
     if (!local_candidates.empty())
     {
         for (const ice_candidate_t &local_candidate : local_candidates)
@@ -275,7 +297,9 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
             std::string candidate_line = build_ice_candidate_line(local_candidate);
             const char *label = local_candidate.kind == ice_candidate_kind_t::SERVER_REFLEXIVE
                                      ? " (public/srflx)"
-                                     : (local_candidate.is_tailscale ? " (tailscale)" : " (lan)");
+                                     : (local_candidate.kind == ice_candidate_kind_t::RELAY
+                                            ? " (turn/relay)"
+                                            : (local_candidate.is_tailscale ? " (tailscale)" : " (lan)"));
             signaling_server_send(client_id, json_build_object({
                 {"type", "ice-candidate"},
                 {"candidate", candidate_line},
@@ -296,9 +320,37 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     }
 }
 
-// Dispatches incoming signaling messages by type. Only "offer" is
-// acted on so far - "ice-candidate" messages are just logged for now
-// (see the comment below).
+// PHASE 24.4: pulls the connection-address field out of an SDP/trickle
+// -ICE "candidate:" line (RFC 8839 section 5.1 - "candidate" SP
+// foundation SP component-id SP transport SP priority SP
+// connection-address SP port SP "typ" ...), i.e. the 5th
+// space-separated token after the "candidate:" prefix. Returns "" if
+// the line doesn't look like a well-formed candidate line at all -
+// callers treat that as "nothing to do", not an error.
+static std::string extract_candidate_ip(const std::string &candidate_line)
+{
+    std::istringstream stream(candidate_line);
+    std::string token;
+    int token_index = 0;
+
+    while (stream >> token)
+    {
+        if (token_index == 4) // 0=foundation(with "candidate:" prefix), 1=component, 2=transport, 3=priority, 4=address
+        {
+            return token;
+        }
+        token_index++;
+    }
+
+    return "";
+}
+
+// Dispatches incoming signaling messages by type. "offer" triggers the
+// full answer/candidate exchange (handle_offer()); "ice-candidate"
+// (the browser's own candidates) feeds turn_client_create_permission()
+// so relayed traffic from the browser has somewhere to go once it
+// starts arriving - see turn_client.h's doc comment on why this has to
+// happen BEFORE that traffic shows up, not reactively.
 static void on_signaling_message(const std::string &client_id, const std::string &raw_json)
 {
     std::map<std::string, std::string> fields = json_parse_object(raw_json);
@@ -317,15 +369,44 @@ static void on_signaling_message(const std::string &client_id, const std::string
         }
         handle_offer(client_id, sdp_it->second);
     }
+    else if (type == "ice-candidate")
+    {
+        auto candidate_it = fields.find("candidate");
+        std::string peer_ip = (candidate_it != fields.end()) ? extract_candidate_ip(candidate_it->second) : "";
+
+        if (peer_ip.empty())
+        {
+            LOG_WARN("MAIN", "ice-candidate from %s missing/unparseable \"candidate\" field, ignoring", client_id.c_str());
+            return;
+        }
+
+        turn_relay_address_t relay_address;
+        if (turn_client_get_relay_address(relay_address))
+        {
+            // Best-effort - failure here just means the relay path
+            // specifically won't work for THIS candidate's address
+            // (host/srflx candidates the browser also sent are
+            // unaffected, and most sessions never end up needing the
+            // relay path at all - see ice_candidate.cpp's priority
+            // ordering, relay is only ever picked as a last resort).
+            if (!turn_client_create_permission(peer_ip))
+            {
+                LOG_WARN("MAIN", "CreatePermission failed for browser candidate %s (client %s) - "
+                                  "relay path won't work for this peer if it comes to that",
+                         peer_ip.c_str(), client_id.c_str());
+            }
+        }
+        // else: no TURN allocation this run - nothing to do, the
+        // browser's own candidates are otherwise unused by this
+        // project (see the original comment this replaced, still true
+        // for the direct/reflexive path: this side derives the
+        // checked address from each incoming STUN request instead of
+        // needing the browser's candidates in advance for that part).
+    }
     else
     {
-        // Browser's own ice-candidate messages: not consumed yet -
-        // this project's ice_agent only implements the
-        // RESPONDER side of ICE (see ice_agent.h's header comment), so
-        // it derives the checked address straight from each incoming
-        // STUN request's UDP source address rather than needing to
-        // know the browser's candidates in advance. Logged so the
-        // exchange itself can still be observed/debugged.
+        // Anything else this project doesn't have a handler for -
+        // logged so the exchange itself can still be observed/debugged.
         LOG_INFO("MAIN", "signaling message from client %s: type=%s (not yet handled)", client_id.c_str(), type.c_str());
     }
 }
@@ -472,6 +553,39 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // PHASE 24.4: TURN relay - entirely optional, and off unless every
+    // one of these env vars is set (unlike CAMERA_CONTROL_SECRET's
+    // fail-closed requirement in control_listener_thread.cpp, there's
+    // nothing insecure about running without a TURN server - it just
+    // means no relay candidate gets offered, same as if 24.3's STUN
+    // discovery fails). A failed Allocate is logged by turn_client.cpp
+    // itself and is likewise non-fatal to startup.
+    const char *turn_host = getenv("TURN_SERVER_HOST");
+    const char *turn_port_str = getenv("TURN_SERVER_PORT");
+    const char *turn_username = getenv("TURN_USERNAME");
+    const char *turn_password = getenv("TURN_PASSWORD");
+
+    bool turn_enabled = false;
+    if (turn_host != nullptr && turn_port_str != nullptr && turn_username != nullptr && turn_password != nullptr)
+    {
+        turn_relay_address_t relay;
+        uint16_t turn_port = static_cast<uint16_t>(atoi(turn_port_str));
+
+        if (turn_client_allocate(turn_host, turn_port, turn_username, turn_password, relay))
+        {
+            // Wire relayed STUN checks into the same handling the
+            // direct/reflexive path uses - see ice_agent.h's Phase
+            // 24.4 doc comment on ice_agent_handle_relayed_packet().
+            turn_client_set_data_callback(ice_agent_handle_relayed_packet);
+            turn_enabled = true;
+            LOG_INFO("MAIN", "TURN relay candidate available: %s:%u", relay.ip.c_str(), relay.port);
+        }
+    }
+    else
+    {
+        LOG_INFO("MAIN", "TURN_SERVER_HOST/PORT/USERNAME/PASSWORD not fully set - no relay candidate this run");
+    }
+
     std::cout << "RTSP server ready at rtsp://<this-pi-ip>:" << rtsp_port << "/stream" << std::endl;
     std::cout << "WebRTC signaling server ready at ws://<this-pi-ip>:" << signaling_port << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
@@ -492,6 +606,11 @@ int main(int argc, char **argv)
     signaling_server_stop();
 
     ice_agent_stop();
+
+    if (turn_enabled)
+    {
+        turn_client_deallocate();
+    }
 
     dtls_handshake_cleanup();
 

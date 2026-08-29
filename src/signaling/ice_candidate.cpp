@@ -14,10 +14,11 @@ namespace
 {
 
 // RFC 8445 section 5.1.2.2's recommended type preference table -
-// this project only ever generates host and server-reflexive
-// candidates so far (relay is Phase 24.4).
+// this project generates host, server-reflexive, and (Phase 24.4)
+// relay candidates.
 constexpr uint32_t kTypePreferenceHost = 126;
 constexpr uint32_t kTypePreferenceServerReflexive = 100;
+constexpr uint32_t kTypePreferenceRelay = 0;
 
 // RTP only - this project always uses rtcp-mux (see webrtc_sdp.cpp's
 // a=rtcp-mux), so there is never a separate RTCP component.
@@ -150,6 +151,30 @@ ice_candidate_t make_server_reflexive_candidate(
     return candidate;
 }
 
+ice_candidate_t make_relay_candidate(
+    const std::string &relay_ip, uint16_t relay_port,
+    const std::string &turn_server_ip, uint16_t turn_server_port)
+{
+    ice_candidate_t candidate;
+    candidate.ip = relay_ip;
+    candidate.port = relay_port;
+    candidate.valid = true;
+    candidate.kind = ice_candidate_kind_t::RELAY;
+    candidate.related_ip = turn_server_ip;
+    candidate.related_port = turn_server_port;
+    candidate.is_tailscale = false;
+    candidate.foundation = "relay";
+
+    // Lowest type preference (0) of every candidate kind this project
+    // generates - RFC 8445 section 5.1.2.2 puts relay last precisely
+    // because it's the most expensive/highest-latency path (every
+    // packet makes an extra hop through the TURN server), so ICE
+    // should only actually use it when nothing better connects.
+    candidate.priority = compute_priority(kTypePreferenceRelay, 65535);
+
+    return candidate;
+}
+
 std::string build_ice_candidate_line(const ice_candidate_t &candidate)
 {
     if (!candidate.valid)
@@ -160,7 +185,9 @@ std::string build_ice_candidate_line(const ice_candidate_t &candidate)
     std::ostringstream line;
     line << "candidate:" << candidate.foundation << " " << kComponentId << " UDP " << candidate.priority
          << " " << candidate.ip << " " << candidate.port << " typ "
-         << (candidate.kind == ice_candidate_kind_t::HOST ? "host" : "srflx");
+         << (candidate.kind == ice_candidate_kind_t::HOST
+                 ? "host"
+                 : (candidate.kind == ice_candidate_kind_t::SERVER_REFLEXIVE ? "srflx" : "relay"));
 
     if (candidate.kind != ice_candidate_kind_t::HOST)
     {
