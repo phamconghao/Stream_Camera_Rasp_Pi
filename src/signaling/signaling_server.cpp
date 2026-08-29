@@ -15,6 +15,7 @@
 
 #include "sha1.h"
 #include "base64.h"
+#include "auth_failure_log.h"
 #include "log.h"
 
 static const char *TAG = "SIGNALING_SRV";
@@ -199,6 +200,16 @@ static std::string extract_token_from_request_line(const std::string &block)
 // anything malformed or missing the required headers.
 static bool do_websocket_handshake(int fd, const std::string &client_ip)
 {
+    // PHASE 23.5: rejected before reading anything off the socket at
+    // all - cheaper than 23.4's own token check below for a client
+    // that's already shown repeated bad attempts, and consistent with
+    // rtsp_server.cpp's equivalent check in dispatch().
+    if (auth_failure_is_blocked("SIGNALING", client_ip))
+    {
+        LOG_WARN(TAG, "rejecting connection from temporarily blocked client %s", client_ip.c_str());
+        return false;
+    }
+
     std::string buffer;
     char chunk[2048];
 
@@ -240,7 +251,7 @@ static bool do_websocket_handshake(int fd, const std::string &client_ip)
 
     if (!token_ok)
     {
-        LOG_WARN(TAG, "missing/invalid signaling token from %s, rejecting", client_ip.c_str());
+        auth_failure_log("SIGNALING", client_ip, "missing/invalid signaling token");
 
         static const char *unauthorized_response =
             "HTTP/1.1 401 Unauthorized\r\n"

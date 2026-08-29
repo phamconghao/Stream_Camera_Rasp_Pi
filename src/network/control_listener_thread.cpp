@@ -11,6 +11,7 @@
 #include "rtcp_packet.h"
 #include "time_utils.h"
 #include "hmac.h"
+#include "auth_failure_log.h"
 #include "log.h"
 
 static const char *TAG = "CTRL_LISTEN";
@@ -20,14 +21,18 @@ static std::atomic<bool> g_running(false);
 static std::atomic<uint32_t> g_keyframe_requests_total(0);
 static std::string g_control_secret;
 
-// PHASE 23.2: failed-HMAC-verification datagrams are logged, but on
-// their own rate-limited timer (separate from
+// PHASE 23.2 / 23.5: failed-HMAC-verification datagrams are logged,
+// but on their own rate-limited timer (separate from
 // KEYFRAME_REQUEST_MIN_INTERVAL_US below, which only throttles the
 // legitimate client's own requests, not attacker traffic hitting this
 // listener directly) - a flood of forged datagrams shouldn't be able
 // to flood this process's log output/disk as a side effect of being
 // rejected. Failures are still counted every time, just summarized
-// periodically instead of logged one-by-one.
+// periodically instead of logged one-by-one. This module decides WHEN
+// to emit a line; auth_failure_log() (23.5) only standardizes the
+// format of that line once it does - see that header's comment for
+// why this summarization isn't replaced by auth_failure_log()'s own
+// per-client tracking (this source has no client_ip to track by).
 static uint32_t g_auth_failures_since_log = 0;
 static uint64_t g_last_auth_failure_log_us = 0;
 static constexpr uint64_t AUTH_FAILURE_LOG_MIN_INTERVAL_US = 5 * 1000 * 1000; // 5s
@@ -43,10 +48,14 @@ static void log_auth_failure(const char *what)
         return;
     }
 
-    LOG_WARN(TAG, "%u control datagram(s) failed HMAC verification in the last ~%llus (most recent: %s) - dropped",
+    char reason[192];
+    snprintf(reason, sizeof(reason),
+             "%u control datagram(s) failed HMAC verification in the last ~%llus (most recent: %s) - dropped",
              g_auth_failures_since_log,
              static_cast<unsigned long long>(AUTH_FAILURE_LOG_MIN_INTERVAL_US / 1000000),
              what);
+
+    auth_failure_log("CONTROL_CHANNEL", "", reason);
 
     g_auth_failures_since_log = 0;
     g_last_auth_failure_log_us = now;

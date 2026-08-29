@@ -137,6 +137,7 @@ set(SOURCES
     src/common/sha1.cpp
     src/common/json_lite.cpp
     src/common/hmac.cpp
+    src/common/auth_failure_log.cpp
 )
 
 #

@@ -25,6 +25,7 @@
 #include "udp_sender.h"
 #include "sps_pps_cache.h"
 #include "base64.h"
+#include "auth_failure_log.h"
 #include "log.h"
 
 static const char *TAG = "RTSP_SRV";
@@ -535,6 +536,19 @@ static rtsp_response_t handle_teardown(const rtsp_request_t &req)
 
 static rtsp_response_t dispatch(const rtsp_request_t &req, const std::string &client_ip, const std::string &connection_nonce)
 {
+    // PHASE 23.5: a client_ip already blocked for repeated auth
+    // failures is short-circuited here, before even attempting to
+    // verify this request's own credentials - cheaper for both sides
+    // than running check_digest_auth() again just to reject it anyway.
+    if (req.method != "OPTIONS" && auth_failure_is_blocked("RTSP", client_ip))
+    {
+        rtsp_response_t resp;
+        resp.status_code = 503;
+        resp.status_text = "Service Unavailable";
+        resp.headers["CSeq"] = rtsp_header_get(req, "CSeq");
+        return resp;
+    }
+
     // PHASE 23.3: every method except OPTIONS requires Digest auth -
     // OPTIONS itself stays open so a client can discover the server is
     // alive and which methods it supports before it has credentials to
@@ -551,8 +565,24 @@ static rtsp_response_t dispatch(const rtsp_request_t &req, const std::string &cl
     // trust the Session header" scheme the roadmap originally sketched.
     if (req.method != "OPTIONS" && !check_digest_auth(req, connection_nonce))
     {
-        LOG_WARN(TAG, "%s %s from %s: missing/invalid Digest credentials - challenging",
-                 req.method.c_str(), req.uri.c_str(), client_ip.c_str());
+        // PHASE 23.5 refinement: only count this toward the
+        // auth_failure_log block threshold if the client actually
+        // PRESENTED credentials that turned out to be wrong. A request
+        // with no Authorization header at all is the normal, expected
+        // first round-trip of RFC 2617's challenge/response flow -
+        // every legitimate client does exactly this once per
+        // connection to learn the nonce before it can compute a real
+        // response. Counting that expected step as a "failure" would
+        // mean every legitimate session silently spends one count
+        // toward getting itself blocked for no real reason - found by
+        // this phase's own end-to-end test sending only bare,
+        // credential-less DESCRIBEs and hitting the block after
+        // exactly AUTH_FAILURE_BLOCK_THRESHOLD (10) of them, well
+        // before any actual wrong-credential attempt happened.
+        if (!rtsp_header_get(req, "Authorization").empty())
+        {
+            auth_failure_log("RTSP", client_ip, "invalid Digest credentials");
+        }
 
         rtsp_response_t resp = build_unauthorized_response(connection_nonce);
         resp.headers["CSeq"] = rtsp_header_get(req, "CSeq");
