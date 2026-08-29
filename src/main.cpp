@@ -254,19 +254,35 @@ static void handle_offer(const std::string &client_id, const std::string &sdp)
     // message - the browser's ICE agent tries all of them and uses
     // whichever pair actually connects.
     std::vector<ice_candidate_t> local_candidates = get_local_host_candidates(ICE_AGENT_PORT);
+
+    // Phase 24.3: append a server-reflexive candidate too, if the
+    // one-time STUN discovery in ice_agent_start() succeeded - this is
+    // what lets a browser with no VPN and no LAN access reach the Pi
+    // at all. Absent (rather than fatal) when discovery failed/hasn't
+    // completed - LAN/Tailscale viewers are unaffected either way.
+    ice_public_address_t public_address;
+    if (ice_agent_get_public_address(public_address))
+    {
+        local_candidates.push_back(make_server_reflexive_candidate(
+            public_address.public_ip, public_address.public_port,
+            public_address.base_ip, public_address.base_port));
+    }
+
     if (!local_candidates.empty())
     {
         for (const ice_candidate_t &local_candidate : local_candidates)
         {
             std::string candidate_line = build_ice_candidate_line(local_candidate);
+            const char *label = local_candidate.kind == ice_candidate_kind_t::SERVER_REFLEXIVE
+                                     ? " (public/srflx)"
+                                     : (local_candidate.is_tailscale ? " (tailscale)" : " (lan)");
             signaling_server_send(client_id, json_build_object({
                 {"type", "ice-candidate"},
                 {"candidate", candidate_line},
                 {"sdpMid", offer.mid},
                 {"sdpMLineIndex", "0"},
             }));
-            LOG_INFO("MAIN", "sent ICE candidate to client %s: %s%s", client_id.c_str(), candidate_line.c_str(),
-                     local_candidate.is_tailscale ? " (tailscale)" : " (lan)");
+            LOG_INFO("MAIN", "sent ICE candidate to client %s: %s%s", client_id.c_str(), candidate_line.c_str(), label);
         }
     }
     else

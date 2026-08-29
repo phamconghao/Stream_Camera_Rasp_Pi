@@ -328,3 +328,73 @@ std::vector<uint8_t> build_stun_binding_request(
 
     return msg;
 }
+
+std::vector<uint8_t> build_stun_binding_request_no_auth(uint8_t out_transaction_id[12])
+{
+    std::random_device rd;
+    for (int i = 0; i < 12; i++)
+    {
+        out_transaction_id[i] = static_cast<uint8_t>(rd() & 0xFF);
+    }
+
+    std::vector<uint8_t> msg = stun_message_header(STUN_BINDING_REQUEST, out_transaction_id);
+    append_fingerprint(msg); // no USERNAME/MESSAGE-INTEGRITY - see header comment
+    return msg;
+}
+
+bool parse_stun_xor_mapped_address(const uint8_t *data, size_t size, std::string &out_ip, uint16_t &out_port)
+{
+    if (size < STUN_HEADER_SIZE)
+    {
+        return false;
+    }
+
+    uint16_t body_length = read_u16(data + 2);
+    size_t end = STUN_HEADER_SIZE + body_length;
+    if (size < end)
+    {
+        return false;
+    }
+
+    size_t pos = STUN_HEADER_SIZE;
+    while (pos + 4 <= end)
+    {
+        uint16_t attr_type = read_u16(data + pos);
+        uint16_t attr_len = read_u16(data + pos + 2);
+        size_t value_start = pos + 4;
+
+        if (value_start + attr_len > end)
+        {
+            return false; // malformed attribute
+        }
+
+        if (attr_type == STUN_ATTR_XOR_MAPPED_ADDRESS && attr_len >= 8)
+        {
+            uint8_t family = data[value_start + 1];
+            if (family != 0x01) // IPv4 only - this project has no IPv6 support anywhere else either
+            {
+                return false;
+            }
+
+            uint16_t xor_port = read_u16(data + value_start + 2);
+            uint32_t xor_addr = read_u32(data + value_start + 4);
+
+            uint16_t port = static_cast<uint16_t>(xor_port ^ (STUN_MAGIC_COOKIE >> 16));
+            uint32_t addr_host = xor_addr ^ STUN_MAGIC_COOKIE;
+
+            struct in_addr addr;
+            addr.s_addr = htonl(addr_host);
+            char ip_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
+
+            out_ip = ip_str;
+            out_port = port;
+            return true;
+        }
+
+        size_t padded_len = (attr_len + 3) & ~static_cast<size_t>(3);
+        pos = value_start + padded_len;
+    }
+
+    return false; // no XOR-MAPPED-ADDRESS attribute found
+}

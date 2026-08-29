@@ -81,4 +81,24 @@ std::vector<uint8_t> build_stun_binding_request(
     const std::string &ice_pwd,
     uint8_t out_transaction_id[12]);
 
+// Builds a Binding Request per RFC 5389's basic "Binding" usage - for
+// querying a PUBLIC STUN server about this project's own
+// server-reflexive address (Phase 24.3's discovery step), not for ICE
+// connectivity checks between peers. Deliberately carries NO USERNAME/
+// MESSAGE-INTEGRITY: RFC 5389 section 10 only requires those when a
+// STUN usage specifically calls for authentication (ICE connectivity
+// checks do, via ice_pwd - see build_stun_binding_request() above;
+// plain NAT-discovery Binding usage does not), and public STUN servers
+// generally neither expect nor check them. FINGERPRINT is still
+// included since it isn't authentication, just a demux checksum.
+std::vector<uint8_t> build_stun_binding_request_no_auth(uint8_t out_transaction_id[12]);
+
+// Extracts XOR-MAPPED-ADDRESS (RFC 5389 section 15.2) from a raw
+// Binding Success Response - the address the STUN server says this
+// request appeared to come FROM, i.e. this project's own address as
+// seen from outside any NAT in front of it. IPv4 only. Returns false
+// if the attribute is missing/malformed/not IPv4, or the message is
+// too short/truncated.
+bool parse_stun_xor_mapped_address(const uint8_t *data, size_t size, std::string &out_ip, uint16_t &out_port);
+
 #endif // __STUN_MESSAGE_H__

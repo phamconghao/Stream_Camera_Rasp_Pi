@@ -13,20 +13,21 @@
 namespace
 {
 
-// RFC 8445 section 5.1.2.1 candidate type preference. This project
-// only ever generates host candidates, so this is always 126 (the
-// spec's recommended max for type "host").
+// RFC 8445 section 5.1.2.2's recommended type preference table -
+// this project only ever generates host and server-reflexive
+// candidates so far (relay is Phase 24.4).
 constexpr uint32_t kTypePreferenceHost = 126;
+constexpr uint32_t kTypePreferenceServerReflexive = 100;
 
 // RTP only - this project always uses rtcp-mux (see webrtc_sdp.cpp's
 // a=rtcp-mux), so there is never a separate RTCP component.
 constexpr uint32_t kComponentId = 1;
 
-uint32_t compute_priority(uint32_t local_preference)
+uint32_t compute_priority(uint32_t type_preference, uint32_t local_preference)
 {
     // RFC 8445 section 5.1.2.1:
     //   priority = (2^24)*type_pref + (2^8)*local_pref + (2^0)*(256-component_id)
-    return (kTypePreferenceHost << 24) | (local_preference << 8) | (256 - kComponentId);
+    return (type_preference << 24) | (local_preference << 8) | (256 - kComponentId);
 }
 
 } // namespace
@@ -115,10 +116,38 @@ std::vector<ice_candidate_t> get_local_host_candidates(uint16_t port)
     {
         uint32_t local_preference = 65535 - static_cast<uint32_t>(i);
         candidates[i].foundation = std::to_string(i + 1);
-        candidates[i].priority = compute_priority(local_preference);
+        candidates[i].priority = compute_priority(kTypePreferenceHost, local_preference);
     }
 
     return candidates;
+}
+
+ice_candidate_t make_server_reflexive_candidate(
+    const std::string &public_ip, uint16_t public_port,
+    const std::string &base_ip, uint16_t base_port)
+{
+    ice_candidate_t candidate;
+    candidate.ip = public_ip;
+    candidate.port = public_port;
+    candidate.valid = true;
+    candidate.kind = ice_candidate_kind_t::SERVER_REFLEXIVE;
+    candidate.related_ip = base_ip;
+    candidate.related_port = base_port;
+    candidate.is_tailscale = false; // a STUN-discovered public address is never a Tailscale one
+
+    // "srflx" rather than a number - foundations only need to be a
+    // valid ice-char string (RFC 8445 section 5.1.1.3), and using a
+    // non-numeric one here makes collision with get_local_host_candidates()'s
+    // numeric "1", "2", ... foundations structurally impossible rather
+    // than just unlikely.
+    candidate.foundation = "srflx";
+
+    // Single candidate of this kind, so local_preference's exact value
+    // doesn't affect ordering relative to itself - 65535 (RFC 8445's
+    // max) for consistency with how host candidates are scored.
+    candidate.priority = compute_priority(kTypePreferenceServerReflexive, 65535);
+
+    return candidate;
 }
 
 std::string build_ice_candidate_line(const ice_candidate_t &candidate)
@@ -130,6 +159,16 @@ std::string build_ice_candidate_line(const ice_candidate_t &candidate)
 
     std::ostringstream line;
     line << "candidate:" << candidate.foundation << " " << kComponentId << " UDP " << candidate.priority
-         << " " << candidate.ip << " " << candidate.port << " typ host";
+         << " " << candidate.ip << " " << candidate.port << " typ "
+         << (candidate.kind == ice_candidate_kind_t::HOST ? "host" : "srflx");
+
+    if (candidate.kind != ice_candidate_kind_t::HOST)
+    {
+        // raddr/rport (RFC 8839 section 5.1) - required on any
+        // non-host candidate line, identifying the base address this
+        // one was derived from.
+        line << " raddr " << candidate.related_ip << " rport " << candidate.related_port;
+    }
+
     return line.str();
 }
