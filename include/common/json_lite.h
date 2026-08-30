@@ -31,4 +31,12 @@ std::map<std::string, std::string> json_parse_object(const std::string &json);
 // each value as a JSON string. Order is preserved for readability.
 std::string json_build_object(const std::vector<std::pair<std::string, std::string>> &fields);
 
+// Builds a JSON array of flat objects - "[{...},{...}]" - by calling
+// json_build_object() on each inner vector and joining with ",". The
+// one place this project needs anything beyond a single flat object
+// (the admin dashboard's per-viewer session list, see
+// webrtc_session_stats.h) - stays a thin wrapper rather than growing
+// this file into a general nested-value JSON library.
+std::string json_build_array_of_objects(const std::vector<std::vector<std::pair<std::string, std::string>>> &objects);
+
 #endif // __JSON_LITE_H__

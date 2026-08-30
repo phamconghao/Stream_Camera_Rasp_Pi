@@ -15,6 +15,7 @@
 #include "dtls_cert.h"
 #include "srtp_session.h"
 #include "webrtc_media_registry.h"
+#include "webrtc_session_stats.h"
 #include "pipeline_controller.h"
 #include "bcm2835_encoder.h"
 #include "log.h"
@@ -232,6 +233,7 @@ void dtls_handshake_unregister_session(const std::string &ice_ufrag)
 
     srtp_session_destroy(ice_ufrag); // no-op if srtp_session_create() was never reached/succeeded for this session
     webrtc_media_registry_remove(ice_ufrag); // no-op if it was never added
+    webrtc_session_stats_on_disconnect(ice_ufrag); // no-op if it was never tracked
 
     if (session->media_pipeline_ref_taken)
     {
@@ -481,6 +483,7 @@ static void *handshake_thread_func(void *arg)
         // received frame is that IDR rather than whatever was already
         // mid-flight.
         webrtc_media_registry_add(session->ice_ufrag);
+        webrtc_session_stats_on_connect(session->ice_ufrag);
     }
 
     return nullptr;

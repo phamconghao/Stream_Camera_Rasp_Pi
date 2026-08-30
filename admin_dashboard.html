@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Admin</title>
+<style>
+  body {
+    background: #111;
+    color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 20px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  h1 { font-size: 18px; color: #9aa; margin: 0; }
+  .card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    margin: 0 0 10px 0;
+    font-weight: 500;
+  }
+  button {
+    background: #2a2a4a;
+    border: 1px solid #4a4a8a;
+    color: #cdf;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.logout {
+    background: #2a1414;
+    border: 1px solid #6a2a2a;
+    color: #f87171;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+  #status { font-size: 13px; margin-top: 10px; }
+  .ok { color: #4ade80; }
+  .bad { color: #f87171; }
+  video {
+    width: 100%;
+    border-radius: 8px;
+    background: #000;
+    display: block;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #2a2a2a; }
+  th { color: #888; font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+  #viewersEmpty { color: #666; font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Camera Admin</h1>
+    <form method="POST" action="/logout" style="margin:0;">
+      <button type="submit" class="logout">Đăng xuất</button>
+    </form>
+  </header>
+
+  <div class="card">
+    <h2>Video trực tiếp</h2>
+    <video id="remoteVideo" autoplay playsinline controls></video>
+    <div id="status">Đang kết nối...</div>
+  </div>
+
+  <div class="card">
+    <h2>Điều khiển</h2>
+    <button id="btnForceKeyframe">Ép Keyframe</button>
+    <span id="keyframeStatus" style="margin-left:10px; font-size:12px; color:#888;"></span>
+  </div>
+
+  <div class="card">
+    <h2>Người xem đang kết nối (WebRTC)</h2>
+    <div id="viewersEmpty">Chưa có ai đang xem.</div>
+    <table id="viewersTable" style="display:none;">
+      <thead>
+        <tr>
+          <th>Session</th>
+          <th>Thời gian xem</th>
+          <th>FPS (~)</th>
+          <th>Mất gói</th>
+          <th>Jitter</th>
+        </tr>
+      </thead>
+      <tbody id="viewersBody"></tbody>
+    </table>
+  </div>
+
+<script>
+// Reuses the same core WebRTC connect sequence as webrtc_test.html
+// (createOffer -> send over signaling -> handle answer/ice-candidate),
+// minus that page's step-by-step debug checklist, plus two admin-only
+// commands ("force-keyframe", "get-viewers") layered on the same
+// WebSocket connection - see main.cpp's on_signaling_message() for the
+// server side of all of this.
+//
+// SIGNALING_TOKEN/SIGNALING_PORT/ADMIN_SESSION_ID below are substituted
+// server-side by admin_http_server.cpp's GET / handler, only after it
+// has already verified this browser's admin_session cookie - a human
+// never has to see or type the raw signaling token.
+const SIGNALING_TOKEN = "%%SIGNALING_TOKEN%%";
+const SIGNALING_PORT = "%%SIGNALING_PORT%%";
+const ADMIN_SESSION_ID = "%%ADMIN_SESSION_ID%%";
+
+const statusEl = document.getElementById('status');
+const keyframeStatusEl = document.getElementById('keyframeStatus');
+
+function setStatus(text, ok) {
+  statusEl.textContent = text;
+  statusEl.className = ok === undefined ? '' : (ok ? 'ok' : 'bad');
+}
+
+let ws;
+let pc;
+
+// frames_sent is a monotonically increasing counter the server keeps
+// per viewer session (see webrtc_session_stats.h) - fps here is
+// derived client-side by diffing that counter between two consecutive
+// "get-viewers" polls, not a value the server computes itself.
+const lastFrameCounts = new Map(); // ice_ufrag -> {frames, atMs}
+
+function renderViewers(sessions) {
+  const emptyEl = document.getElementById('viewersEmpty');
+  const tableEl = document.getElementById('viewersTable');
+  const bodyEl = document.getElementById('viewersBody');
+
+  if (!sessions.length) {
+    emptyEl.style.display = 'block';
+    tableEl.style.display = 'none';
+    return;
+  }
+
+  emptyEl.style.display = 'none';
+  tableEl.style.display = 'table';
+  bodyEl.innerHTML = '';
+
+  const nowMs = Date.now();
+
+  for (const s of sessions) {
+    const ufrag = s.ice_ufrag;
+    const connectedDurationMs = parseInt(s.connected_duration_ms, 10);
+    const framesSent = parseInt(s.frames_sent, 10);
+    const hasRtcpRr = s.has_rtcp_rr === 'true';
+    const fractionLost = parseInt(s.fraction_lost, 10);
+    const jitterUnits = parseInt(s.jitter_rtp_units, 10);
+
+    let fpsText = '-';
+    const prev = lastFrameCounts.get(ufrag);
+    if (prev) {
+      const dtSec = (nowMs - prev.atMs) / 1000;
+      if (dtSec > 0) {
+        fpsText = Math.max(0, (framesSent - prev.frames) / dtSec).toFixed(1);
+      }
+    }
+    lastFrameCounts.set(ufrag, { frames: framesSent, atMs: nowMs });
+
+    const durationSec = Math.max(0, Math.floor(connectedDurationMs / 1000));
+    const durationText = `${Math.floor(durationSec / 60)}m${(durationSec % 60).toString().padStart(2, '0')}s`;
+
+    const lossText = hasRtcpRr ? ((fractionLost / 256) * 100).toFixed(1) + '%' : '-';
+    const jitterText = hasRtcpRr ? (jitterUnits / 90).toFixed(0) + 'ms' : '-'; // 90kHz RTP clock -> ms
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${ufrag.slice(0, 8)}…</td>
+      <td>${durationText}</td>
+      <td>${fpsText}</td>
+      <td>${lossText}</td>
+      <td>${jitterText}</td>
+    `;
+    bodyEl.appendChild(tr);
+  }
+
+  // Drop tracking for sessions that disappeared, so a reused ufrag
+  // (unlikely, but not impossible) doesn't start from a stale count.
+  const currentUfrags = new Set(sessions.map(s => s.ice_ufrag));
+  for (const ufrag of [...lastFrameCounts.keys()]) {
+    if (!currentUfrags.has(ufrag)) {
+      lastFrameCounts.delete(ufrag);
+    }
+  }
+}
+
+async function connect() {
+  const wsUrl = `ws://${location.hostname}:${SIGNALING_PORT}/?token=${encodeURIComponent(SIGNALING_TOKEN)}`;
+
+  ws = new WebSocket(wsUrl);
+  pc = new RTCPeerConnection({ iceServers: [] });
+  window.pc = pc; // exposed for DevTools debugging, same as webrtc_test.html
+
+  pc.addTransceiver('video', { direction: 'recvonly' });
+
+  pc.ontrack = (event) => {
+    document.getElementById('remoteVideo').srcObject = event.streams[0];
+  };
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      ws.send(JSON.stringify({
+        type: 'ice-candidate',
+        candidate: event.candidate.candidate,
+        sdpMid: event.candidate.sdpMid || '0',
+        sdpMLineIndex: String(event.candidate.sdpMLineIndex ?? 0),
+      }));
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+      setStatus(`Mất kết nối (${pc.iceConnectionState})`, false);
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') {
+      setStatus('Đã kết nối', true);
+    } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      setStatus(`Mất kết nối (${pc.connectionState})`, false);
+    }
+  };
+
+  ws.onopen = async () => {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+  };
+
+  ws.onerror = () => {
+    setStatus('Lỗi kết nối tới signaling server', false);
+  };
+
+  let gotAnswer = false;
+
+  ws.onmessage = async (event) => {
+    const parsed = JSON.parse(event.data);
+
+    if (parsed.type === 'error') {
+      setStatus('Lỗi từ server: ' + parsed.message, false);
+      return;
+    }
+
+    if (parsed.type === 'answer' && !gotAnswer) {
+      gotAnswer = true;
+      await pc.setRemoteDescription({ type: 'answer', sdp: parsed.sdp });
+      return;
+    }
+
+    if (parsed.type === 'ice-candidate') {
+      await pc.addIceCandidate({
+        candidate: parsed.candidate,
+        sdpMid: parsed.sdpMid,
+        sdpMLineIndex: parseInt(parsed.sdpMLineIndex, 10),
+      });
+      return;
+    }
+
+    if (parsed.type === 'force-keyframe-ack') {
+      keyframeStatusEl.textContent = parsed.ok === 'true' ? 'Đã ép keyframe' : 'Thất bại';
+      setTimeout(() => { keyframeStatusEl.textContent = ''; }, 3000);
+      return;
+    }
+
+    if (parsed.type === 'viewers') {
+      renderViewers(parsed.sessions || []);
+      return;
+    }
+  };
+
+  // Poll the viewer list every 2s once the WebSocket is open - same
+  // channel the video itself uses, gated by ADMIN_SESSION_ID on the
+  // server side (see main.cpp's on_signaling_message()).
+  setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'get-viewers', admin_session: ADMIN_SESSION_ID }));
+    }
+  }, 2000);
+}
+
+document.getElementById('btnForceKeyframe').addEventListener('click', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'force-keyframe', admin_session: ADMIN_SESSION_ID }));
+    keyframeStatusEl.textContent = 'Đang gửi...';
+  }
+});
+
+connect();
+</script>
+</body>
+</html>

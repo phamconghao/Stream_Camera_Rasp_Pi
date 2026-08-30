@@ -12,6 +12,7 @@
 #include "signaling_server.h"
 #include "webrtc_sdp.h"
 #include "webrtc_media_registry.h"
+#include "webrtc_session_stats.h"
 #include "dtls_cert.h"
 #include "ice_credentials.h"
 #include "ice_candidate.h"
@@ -21,6 +22,10 @@
 #include "srtp_session.h"
 #include "sps_pps_cache.h"
 #include "json_lite.h"
+#include "bcm2835_encoder.h"
+#include "admin_session.h"
+#include "admin_http_server.h"
+#include "time_utils.h"
 #include "log.h"
 
 #include <map>
@@ -403,6 +408,63 @@ static void on_signaling_message(const std::string &client_id, const std::string
         // checked address from each incoming STUN request instead of
         // needing the browser's candidates in advance for that part).
     }
+    else if (type == "force-keyframe" || type == "get-viewers")
+    {
+        // Both are admin-dashboard-only capabilities layered on top of
+        // this same SIGNALING_TOKEN-gated WebSocket - SIGNALING_TOKEN
+        // alone only ever proved "may open a WebRTC viewing session"
+        // (see webrtc_test.html, which anyone with that token can use),
+        // so these additionally require a valid admin_session id
+        // (admin_session.h) - the one admin_http_server.cpp hands out
+        // after a real ADMIN_USERNAME/ADMIN_PASSWORD login and injects
+        // into admin_dashboard.html server-side. Without this check,
+        // anyone who knows SIGNALING_TOKEN could force keyframes
+        // stream-wide or read every viewer's connection stats -
+        // capabilities the login page is supposed to be gating.
+        auto session_it = fields.find("admin_session");
+        if (session_it == fields.end() || !admin_session_is_valid(session_it->second))
+        {
+            LOG_WARN("MAIN", "%s from %s rejected - invalid/missing admin_session", type.c_str(), client_id.c_str());
+            signaling_server_send(client_id, json_build_object({{"type", "error"}, {"message", "unauthorized"}}));
+            return;
+        }
+
+        if (type == "force-keyframe")
+        {
+            bool ok = (bcm2835_encoder_force_keyframe() == 0);
+            LOG_INFO("MAIN", "admin-requested force-keyframe via client %s: %s", client_id.c_str(), ok ? "ok" : "failed");
+            signaling_server_send(client_id, json_build_object({{"type", "force-keyframe-ack"}, {"ok", ok ? "true" : "false"}}));
+        }
+        else // "get-viewers"
+        {
+            std::vector<webrtc_session_stats_snapshot_t> snapshots = webrtc_session_stats_get_all();
+            uint64_t now_us = time_utils_now_us();
+
+            std::vector<std::vector<std::pair<std::string, std::string>>> rows;
+            for (const auto &s : snapshots)
+            {
+                // connected_at_us comes from time_utils_now_us(), i.e.
+                // steady_clock - NOT wall-clock/Unix-epoch time - so the
+                // duration is computed here, against the same clock,
+                // rather than sent raw for the browser to diff against
+                // Date.now() (a different clock domain entirely, which
+                // would silently produce a nonsense duration).
+                uint64_t connected_duration_ms = (now_us - s.connected_at_us) / 1000;
+
+                rows.push_back({
+                    {"ice_ufrag", s.ice_ufrag},
+                    {"connected_duration_ms", std::to_string(connected_duration_ms)},
+                    {"frames_sent", std::to_string(s.frames_sent)},
+                    {"has_rtcp_rr", s.has_rtcp_rr ? "true" : "false"},
+                    {"fraction_lost", std::to_string(s.last_fraction_lost)},
+                    {"cumulative_lost", std::to_string(s.cumulative_lost)},
+                    {"jitter_rtp_units", std::to_string(s.last_jitter_rtp_units)},
+                });
+            }
+
+            signaling_server_send(client_id, "{\"type\":\"viewers\",\"sessions\":" + json_build_array_of_objects(rows) + "}");
+        }
+    }
     else
     {
         // Anything else this project doesn't have a handler for -
@@ -423,6 +485,13 @@ int main(int argc, char **argv)
     // TCP port the WebRTC signaling (WebSocket) server listens on
     // independent of rtsp_port above.
     uint16_t signaling_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 8765;
+
+    // TCP port the admin login/dashboard HTTP server listens on -
+    // defaults to 80 so "type the Pi's bare IP into a browser" works
+    // without a port number, per the plan behind this feature. Needs
+    // CAP_NET_BIND_SERVICE to bind as this project's non-root user -
+    // see admin_http_server.cpp's EACCES handling for the exact command.
+    uint16_t admin_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 80;
 
     // PHASE 23.2: control-channel HMAC secret - deliberately an env
     // var, not a positional argv (argv is visible to any local user via
@@ -476,6 +545,26 @@ int main(int argc, char **argv)
         return -1;
     }
     std::string signaling_token(signaling_token_env);
+
+    // Admin dashboard login credentials - same fail-closed reasoning
+    // and shape as the three checks above (env var, not argv; required,
+    // no built-in default). Separate identity from RTSP_USERNAME/
+    // PASSWORD on purpose - "may view the stream" (RTSP creds,
+    // SIGNALING_TOKEN) and "may administer this Pi's camera" (this)
+    // are different privilege levels, see docs-security-threat-model.md.
+    const char *admin_username_env = std::getenv("ADMIN_USERNAME");
+    const char *admin_password_env = std::getenv("ADMIN_PASSWORD");
+    if (admin_username_env == nullptr || admin_username_env[0] == '\0' ||
+        admin_password_env == nullptr || admin_password_env[0] == '\0')
+    {
+        std::cerr << "ADMIN_USERNAME and ADMIN_PASSWORD environment variables must both be set "
+                     "(credentials for the admin dashboard's login page, see "
+                     "docs-security-threat-model.md) - refusing to start with no "
+                     "authentication on the admin dashboard.\n";
+        return -1;
+    }
+    std::string admin_username(admin_username_env);
+    std::string admin_password(admin_password_env);
 
     // App-level flag: only main() (or a future signal handler installed
     // by main()) writes to this. Each thread module manages its own
@@ -558,6 +647,17 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // Admin login/dashboard HTTP server - needs signaling_token +
+    // signaling_port so it can inject them into admin_dashboard.html
+    // after a successful login (see admin_http_server.h); started
+    // after signaling_server_start() succeeds since it depends on that
+    // value being final.
+    if (admin_http_server_start(admin_port, admin_username, admin_password,
+                                 signaling_token, signaling_port) < 0)
+    {
+        return -1;
+    }
+
     // Must be listening before any offer could possibly be answered
     // (handle_offer() registers each session's credentials with this,
     // and sends the browser a candidate pointing at ICE_AGENT_PORT -
@@ -603,6 +703,8 @@ int main(int argc, char **argv)
     std::cout << "RTSP server ready at rtsp://<this-pi-ip>:" << rtsp_port << "/stream" << std::endl;
     std::cout << "WebRTC signaling server ready at " << (signaling_server_is_tls_enabled() ? "wss" : "ws")
               << "://<this-pi-ip>:" << signaling_port << std::endl;
+    std::cout << "Admin dashboard ready at http://<this-pi-ip>"
+              << (admin_port != 80 ? (":" + std::to_string(admin_port)) : "") << "/" << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();
@@ -619,6 +721,8 @@ int main(int argc, char **argv)
     rtsp_server_stop();
 
     signaling_server_stop();
+
+    admin_http_server_stop();
 
     ice_agent_stop();
 

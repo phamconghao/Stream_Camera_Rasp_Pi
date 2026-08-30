@@ -18,6 +18,8 @@
 #include "srtp_session.h"
 #include "bcm2835_encoder.h"
 #include "auth_failure_log.h"
+#include "rtcp_packet.h"
+#include "webrtc_session_stats.h"
 #include "turn_client.h"
 #include "log.h"
 
@@ -512,6 +514,24 @@ static void process_incoming_packet(
         LOG_INFO(TAG, "SRTCP feedback from %s%s:%u (ufrag=%s): %s",
                  route.via_relay ? "relay peer " : "", sender_ip.c_str(), sender_port, ufrag.c_str(),
                  describe_rtcp_feedback(mutable_buf.data(), static_cast<size_t>(len)));
+
+        // Receiver Reports and PLI/FIR are mutually exclusive RTCP
+        // packet types (RR/SR vs RTPFB/PSFB), so this check and the
+        // keyframe-request one below both run unconditionally rather
+        // than as an if/else - feeds the admin dashboard's per-viewer
+        // loss/jitter figures (webrtc_session_stats.h), same field
+        // extraction as control_listener_thread.cpp's handle_rtcp_rr()
+        // for the legacy RTSP path's own RR handling.
+        if (rtcp_is_rr(mutable_buf.data(), static_cast<size_t>(len)))
+        {
+            const rtcp_rr_t *rr = reinterpret_cast<const rtcp_rr_t *>(mutable_buf.data());
+            uint32_t frac_and_cum = ntohl(rr->block.fraction_lost_and_cumulative_be);
+            uint8_t fraction_lost = static_cast<uint8_t>((frac_and_cum >> 24) & 0xFF);
+            uint32_t cumulative_lost = frac_and_cum & 0x00FFFFFF;
+            uint32_t jitter = ntohl(rr->block.jitter_be);
+
+            webrtc_session_stats_record_rtcp_rr(ufrag, fraction_lost, cumulative_lost, jitter);
+        }
 
         if (is_keyframe_request(mutable_buf.data(), static_cast<size_t>(len)))
         {

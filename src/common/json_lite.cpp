@@ -190,3 +190,20 @@ std::string json_build_object(const std::vector<std::pair<std::string, std::stri
     out += "}";
     return out;
 }
+
+std::string json_build_array_of_objects(const std::vector<std::vector<std::pair<std::string, std::string>>> &objects)
+{
+    std::string out = "[";
+
+    for (size_t i = 0; i < objects.size(); i++)
+    {
+        if (i > 0)
+        {
+            out += ",";
+        }
+        out += json_build_object(objects[i]);
+    }
+
+    out += "]";
+    return out;
+}

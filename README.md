@@ -32,6 +32,7 @@ Every stage hands off a **pointer**, never a copy — frame/packet bytes are cop
 | WebRTC (browser playback via ICE/DTLS/SRTP) | ✅ Implemented (6/6 sub-phase) — real video confirmed playing in Chrome/Edge over real WiFi, see `roadmap.md`'s Phase 22 breakdown (22.1-22.7) and `docs-webrtc-black-screen-postmortem.md` |
 | Security (SRTP for RTSP/RTP, RTSP auth, control channel auth) | ✅ Done — control channel HMAC-SHA256 (23.2), RTSP Digest Auth (23.3), WebSocket signaling token (23.4), centralized auth-failure logging + temporary IP blocking (23.5), all fail-closed on missing credentials, see `roadmap.md`'s Phase 23 breakdown. SRTP for RTSP/RTP itself remains out of scope for this phase (accepted trade-off - see Phase 23's "known limitation" note in `roadmap.md`), covered instead by Phase 24's Tailscale VPN tunnel |
 | Remote/WAN access (viewing from a different network than the Pi — e.g. phone on cellular) | ✅ Done — **Tailscale VPN is the official transport for both RTSP and WebRTC**. WebRTC-over-Tailscale confirmed with a real iPhone (Safari). A no-VPN public-access path (STUN/TURN, `ice_candidate`/`ice_agent`/`turn_client`) was also built and works as infrastructure (real STUN discovery, real TLS/WSS), but a genuine no-Tailscale test from cellular failed ICE connectivity — this Pi's router can't be port-forwarded (no admin access, no UPnP) and mobile carrier CGNAT is an additional likely blocker, so Tailscale was chosen as the supported path instead of standing up a paid TURN relay server. See `roadmap.md`'s Phase 24 breakdown for the full story. |
+| Admin dashboard (browser login + live video + force-keyframe + per-viewer stats) | ✅ Done — a real "type the Pi's IP, log in, watch" flow, separate from `webrtc_test.html`'s debug-only `?token=` page. See [Admin dashboard](#admin-dashboard) below and `roadmap.md`'s Phase 25 breakdown. |
 
 Full phase-by-phase status, including implementation evidence per step, lives in [`roadmap.md`](./roadmap.md) — treat that file as the single source of truth over this README for anything more granular than the table above.
 
@@ -74,33 +75,37 @@ The build enables `-Wall -Wextra -Wpedantic -Werror`, so any new warning fails t
 
 ## Run
 
-**PHASE 23: as of Security (Phase 23), `camera_app` requires four environment variables to be set before it will start — it fails closed (refuses to start, no fallback to an unauthenticated/default-keyed mode) if any are missing:**
+**PHASE 23/25: `camera_app` requires six environment variables to be set before it will start — it fails closed (refuses to start, no fallback to an unauthenticated/default-keyed mode) if any are missing:**
 
 | Env var | Used for |
 |---|---|
 | `CAMERA_CONTROL_SECRET` | HMAC-SHA256 key authenticating control-channel datagrams (keyframe requests, loss reports) from `camera_receiver` — must match `camera_receiver`'s own `CAMERA_CONTROL_SECRET` exactly |
 | `RTSP_USERNAME` / `RTSP_PASSWORD` | Credentials for RTSP Digest Authentication (RFC 2326 §17 / RFC 2617) — required on every RTSP request except `OPTIONS` |
 | `SIGNALING_TOKEN` | Pre-shared token required as a `?token=...` query parameter on the WebSocket signaling handshake |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Login credentials for the [admin dashboard](#admin-dashboard) (Phase 25) — a separate identity from `RTSP_USERNAME`/`PASSWORD` ("may view" vs. "may administer") |
 
-See `roadmap.md`'s Phase 23 breakdown (23.1-23.6) and `docs-security-threat-model.md` for why each of these exists and the mechanism behind it.
+See `roadmap.md`'s Phase 23/25 breakdowns and `docs-security-threat-model.md` for why each of these exists and the mechanism behind it.
 
 ```bash
 export CAMERA_CONTROL_SECRET="choose-a-real-secret"
 export RTSP_USERNAME="admin"
 export RTSP_PASSWORD="choose-a-real-password"
 export SIGNALING_TOKEN="choose-a-real-token"
+export ADMIN_USERNAME="admin"
+export ADMIN_PASSWORD="choose-another-real-password"
 
-./build/camera_app [control_port] [rtsp_port] [signaling_port]
+./build/camera_app [control_port] [rtsp_port] [signaling_port] [admin_port]
 ```
 
 - `control_port` — UDP port this sender listens on for keyframe-request/bitrate-feedback datagrams from a receiver (default: `5005`)
 - `rtsp_port` — TCP port the RTSP server listens on (default: `8554`)
 - `signaling_port` — TCP port the WebRTC signaling (WebSocket) server listens on (default: `8765`)
+- `admin_port` — TCP port the [admin dashboard](#admin-dashboard)'s HTTP server listens on (default: `80`, so visiting the Pi's bare IP works with no port number - see that section for the one-time `setcap` step this requires)
 
 Example:
 
 ```bash
-./build/camera_app 5005 8554 8765
+./build/camera_app 5005 8554 8765 80
 ```
 
 The app initializes hardware (camera, encoder) and pools/queues up front, then **starts the RTSP server and waits** — it does not stream to anyone until a client actually sends `PLAY`. Connect with any RTSP client that supports Digest Authentication, e.g.:
@@ -111,9 +116,23 @@ ffplay rtsp://admin:choose-a-real-password@<pi-ip>:8554/stream
 
 `PipelineController` lazily starts the capture→encode→packetize→send chain on the first `PLAY` (ref-counted, so it stays running while any client is watching) and stops it again once the last client `TEARDOWN`s or is reaped as an orphan (~60s of inactivity, no keepalive). `DESCRIBE` returns a real SDP built from the encoder's actual cached SPS/PPS — see `roadmap.md`'s Phase 20 entry for how that's primed if `DESCRIBE` arrives before anyone has ever played.
 
+### Admin dashboard
+
+The normal way to watch the camera: open a browser (phone or computer) and go to `http://<pi-ip>/` (or the Tailscale IP for remote access - see below). You'll land on a login page (`ADMIN_USERNAME`/`ADMIN_PASSWORD`); after logging in you get a dashboard with the live video, a "Force Keyframe" button, and a live table of every currently-connected WebRTC viewer (connected duration, approximate fps, packet loss %, jitter). "Remember me" keeps you logged in for 30 days via a cookie; unchecked, the session lasts 24h. `webrtc_test.html` (the raw `?token=` debug page) still exists separately and is unaffected by any of this.
+
+Port 80 is privileged - since this project doesn't run as root, grant the binary permission to bind it once per build:
+
+```bash
+sudo setcap 'cap_net_bind_service=+ep' build/camera_app
+```
+
+(This must be re-applied after every rebuild - capabilities don't survive relinking. If you'd rather not do this, pass a different `admin_port` above and include it in the URL, e.g. `http://<pi-ip>:8080/`.)
+
+See `roadmap.md`'s Phase 25 breakdown and `docs-security-threat-model.md`'s (e)/(f) rows for the design (in particular: this HTTP server is plaintext, no TLS - safe only because it's meant to be reached over Tailscale/LAN, same as RTSP, never port-forwarded directly to the public internet).
+
 ### Viewing from outside the local network (Phase 24)
 
-The Pi and every viewer device (phone, laptop) must join the same [Tailscale](https://tailscale.com) network — this is the supported way to reach either RTSP or WebRTC from a different network (e.g. cellular data), see `roadmap.md`'s Phase 24 breakdown for why. Once both are on the tailnet, use the Pi's Tailscale IP (`tailscale status` on the Pi, or `tailscale ip` for just the IP) in place of its LAN IP everywhere above — e.g. `ffplay rtsp://admin:choose-a-real-password@<pi-tailscale-ip>:8554/stream`, or `webrtc_test.html`'s WebSocket URL field set to `ws://<pi-tailscale-ip>:8765?token=<your-signaling-token>` (served to the viewer over `http://<pi-tailscale-ip>:8080/webrtc_test.html` via e.g. `python3 -m http.server 8080` on the Pi, since a browser needs the page hosted somewhere reachable, not just opened as a local file, to reach a non-`localhost` WebSocket).
+The Pi and every viewer device (phone, laptop) must join the same [Tailscale](https://tailscale.com) network — this is the supported way to reach either RTSP, WebRTC, or the admin dashboard from a different network (e.g. cellular data), see `roadmap.md`'s Phase 24 breakdown for why. Once both are on the tailnet, use the Pi's Tailscale IP (`tailscale status` on the Pi, or `tailscale ip` for just the IP) in place of its LAN IP everywhere above — e.g. `http://<pi-tailscale-ip>/` for the admin dashboard, `ffplay rtsp://admin:choose-a-real-password@<pi-tailscale-ip>:8554/stream`, or (for the raw debug page specifically) `webrtc_test.html`'s WebSocket URL field set to `ws://<pi-tailscale-ip>:8765?token=<your-signaling-token>` (served to the viewer over `http://<pi-tailscale-ip>:8080/webrtc_test.html` via e.g. `python3 -m http.server 8080` on the Pi, since that debug page - unlike the admin dashboard - isn't served by `camera_app` itself).
 
 The app streams until you press **ENTER** (or the RTSP server is stopped), at which point it shuts down every stage in producer → consumer order.
 
@@ -133,6 +152,7 @@ include/          Public headers, mirrors src/ layout
   rtsp/            RTSP server, session registry, pipeline controller (lazy start/stop)
   writer/          Dashcam-style circular H.264 recorder (receiver side)
   common/          Logger, time utils, app-wide state, base64
+  admin/           Admin dashboard: login/session HTTP server (Phase 25)
 
 src/               Implementation, mirrors include/ layout
   main.cpp         Sender: hardware/pool init, RTSP server, control channel, RTCP
@@ -141,6 +161,10 @@ src/               Implementation, mirrors include/ layout
 CMakeLists.txt     Build configuration (camera_app + camera_receiver targets)
 build.sh           Clean configure + build helper script
 roadmap.md         Phase-by-phase status and implementation evidence (source of truth)
+webrtc_test.html   Raw WebRTC debug/test page (manual ?token=, step-by-step checklist)
+admin_login.html   Admin dashboard login form
+admin_dashboard.html  Admin dashboard: live video, force-keyframe, per-viewer stats
+dashboard.html     Sender/receiver stats.json viewer (needs a separate static file server)
 ```
 
 ### Key modules
@@ -154,10 +178,11 @@ roadmap.md         Phase-by-phase status and implementation evidence (source of 
 - **`network/udp_sender` + `network/udp_sender_thread`** — Consumes `rtp_packet_queue` and fans each packet out to every currently-registered destination (keyed by RTSP `session_id` — one per `PLAY`ing client), rather than a single fixed destination.
 - **`rtsp/rtsp_server`** — TCP RTSP/1.0 server (`OPTIONS`/`DESCRIBE`/`SETUP`/`PLAY`/`TEARDOWN`), backed by `rtsp/rtsp_session_registry` (max 5 concurrent sessions, orphan reaper) and `rtsp/pipeline_controller` (ref-counted lazy start/stop of the whole capture→encode→packetize→send chain).
 - **`writer/circular_h264_writer`** — Receiver-side dashcam-style recorder: rotates fixed-duration segments, deletes the oldest once a storage cap is hit.
+- **`admin/admin_http_server` + `admin/admin_session`** — Self-contained plain HTTP server (port 80 by default) serving the login form and, once a valid session cookie is presented, `admin_dashboard.html` with the real `SIGNALING_TOKEN` injected server-side. Entirely separate from `signaling/signaling_server` (the WebSocket port) - the dashboard's own video connection goes to that existing server unchanged, just with a server-supplied token instead of a manually-typed one.
 
 ## Roadmap
 
-See [`roadmap.md`](./roadmap.md) for the full 25-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. **Phase 23 (Security for external-network access)** is also done — see `roadmap.md`'s Phase 23 breakdown (23.1-23.6) for the threat model and what each of the four auth mechanisms covers. **Phase 24 (Remote/WAN access)** is done — Tailscale VPN is the supported way to reach the camera from a different network; see `roadmap.md`'s Phase 24 breakdown for why the original no-VPN/STUN-TURN direction was tried and then dropped in favor of Tailscale. Remaining open item: real-hardware validation of ≥2 concurrent RTSP clients (Phase 20 steps 4-6).
+See [`roadmap.md`](./roadmap.md) for the full 26-phase roadmap with per-phase implementation evidence. **Phase 22 (WebRTC)** is done — signaling server → WebRTC-compatible SDP → ICE → DTLS handshake → SRTP → end-to-end integration (22.1-22.6), plus a follow-up debugging pass (22.7) that fixed 5 bugs behind a black-screen issue found when testing with real video; see `docs-webrtc-black-screen-postmortem.md` for the full investigation. **Phase 23 (Security for external-network access)** is also done — see `roadmap.md`'s Phase 23 breakdown (23.1-23.6) for the threat model and what each of the four auth mechanisms covers. **Phase 24 (Remote/WAN access)** is done — Tailscale VPN is the supported way to reach the camera from a different network; see `roadmap.md`'s Phase 24 breakdown for why the original no-VPN/STUN-TURN direction was tried and then dropped in favor of Tailscale. **Phase 25 (Admin dashboard)** is done — real login + session-gated dashboard with live video, force-keyframe, and per-viewer stats; see `roadmap.md`'s Phase 25 breakdown. Remaining open items: real-hardware validation of ≥2 concurrent RTSP clients (Phase 20 steps 4-6), and a real browser/phone click-through of the admin dashboard's UI (verified so far via an independent scripted WebRTC client, not a human looking at it - see Phase 25.5).
 
 ## Design notes
 

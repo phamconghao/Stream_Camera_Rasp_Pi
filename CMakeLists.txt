@@ -72,6 +72,7 @@ include_directories(
     include/network
     include/rtsp
     include/signaling
+    include/admin
 
     ${LIBCAMERA_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIRS}
@@ -130,7 +131,11 @@ set(SOURCES
     src/signaling/dtls_handshake.cpp
     src/signaling/srtp_session.cpp
     src/signaling/webrtc_media_registry.cpp
+    src/signaling/webrtc_session_stats.cpp
     src/signaling/webrtc_sender_thread.cpp
+
+    src/admin/admin_session.cpp
+    src/admin/admin_http_server.cpp
 
     src/common/app_state.cpp
     src/common/log.cpp

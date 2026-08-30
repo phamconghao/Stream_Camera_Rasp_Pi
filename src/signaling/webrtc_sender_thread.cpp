@@ -10,6 +10,7 @@
 #include "webrtc_rtp_packet_pool.h"
 #include "webrtc_rtp_packet_queue.h"
 #include "webrtc_media_registry.h"
+#include "webrtc_session_stats.h"
 #include "srtp_session.h"
 #include "ice_agent.h"
 #include "rtp_packet.h"
@@ -97,6 +98,16 @@ static void *webrtc_sender_thread_func(void *arg)
             {
                 LOG_INFO(TAG, "sent SRTP-encrypted RTP to ufrag=%s (seq=%u, plaintext=%zu -> ciphertext=%d bytes)",
                          ufrag.c_str(), packet->sequence_number, packet->size, len);
+
+                // Count "frames sent" (not "packets sent") for the
+                // admin dashboard's fps figure - the marker bit is set
+                // exactly once per access unit (RFC 3550), on its last
+                // packet, regardless of whether that access unit was a
+                // single-NAL packet or many FU-A fragments.
+                if (packet->marker)
+                {
+                    webrtc_session_stats_record_frame_sent(ufrag);
+                }
             }
         }
 
