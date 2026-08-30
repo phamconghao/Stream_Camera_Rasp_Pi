@@ -74,3 +74,8 @@ myenv/
 *.yuv
 *.h264
 *.patch
+
+# Runtime stats file written by camera_receiver's loss_reporter_thread
+# (loss_reporter_thread.cpp) for dashboard.html to poll - regenerated
+# every run, not source.
+receiver_stats.json
