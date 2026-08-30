@@ -1,6 +1,8 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstdint>
+#include <cerrno>
+#include <csignal>
 #include <string>
 #include <unistd.h>
 
@@ -473,8 +475,33 @@ static void on_signaling_message(const std::string &client_id, const std::string
     }
 }
 
+// SIGINT (Ctrl+C) / SIGTERM (systemctl stop, or any `kill` without -9)
+// handler: only ever touches g_running, an std::atomic<bool>, which is
+// safe to write from a signal handler (unlike most other operations -
+// see signal-safety(7)). This is what lets the plain read() call in
+// main()'s wait loop below get interrupted (EINTR) instead of the
+// process being killed outright before it reaches the shutdown
+// sequence (control_listener_thread_stop() and friends further down).
+static void handle_shutdown_signal(int signum)
+{
+    (void)signum;
+    g_running = false;
+}
+
 int main(int argc, char **argv)
 {
+    // Installed first, before anything else can block - so a signal
+    // arriving at any point during startup or the main wait loop is
+    // caught. No SA_RESTART: a blocking syscall interrupted by one of
+    // these must return EINTR rather than transparently resuming, or
+    // the read() in the wait loop below would never notice the signal.
+    struct sigaction sa;
+    sa.sa_handler = handle_shutdown_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+
     // Control channel port this sender listens on for keyframe-request
     // datagrams from the receiver (see control_listener_thread.h).
     uint16_t control_port = (argc > 1) ? static_cast<uint16_t>(std::atoi(argv[1])) : 5005;
@@ -705,9 +732,29 @@ int main(int argc, char **argv)
               << "://<this-pi-ip>:" << signaling_port << std::endl;
     std::cout << "Admin dashboard ready at http://<this-pi-ip>"
               << (admin_port != 80 ? (":" + std::to_string(admin_port)) : "") << "/" << std::endl;
-    std::cout << "Press ENTER to exit..." << std::endl;
+    std::cout << "Press ENTER to exit (or send SIGINT/SIGTERM, e.g. systemctl stop)..." << std::endl;
 
-    std::cin.get();
+    // Plain read() rather than std::cin.get(): a blocked C stdio/iostream
+    // read's behavior on EINTR isn't something this project wants to
+    // depend on, whereas a raw read() reliably returns -1/EINTR the
+    // moment handle_shutdown_signal() above runs, so g_running is
+    // rechecked immediately instead of the process just dying before
+    // reaching the shutdown sequence below (systemd's default SIGTERM
+    // action, absent this loop, is to kill the process outright).
+    char discard;
+    while (g_running)
+    {
+        ssize_t n = read(STDIN_FILENO, &discard, 1);
+        if (n > 0)
+        {
+            break; // Enter pressed (or any byte) - interactive exit
+        }
+        if (n < 0 && errno == EINTR)
+        {
+            continue; // interrupted by SIGINT/SIGTERM - loop rechecks g_running
+        }
+        break; // EOF or real read error - fall through to shutdown either way
+    }
 
     g_running = false;
 
