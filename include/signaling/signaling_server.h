@@ -27,6 +27,20 @@
  * that matters for the DoS concern this closes (see
  * docs-security-threat-model.md section 1.1 row (d)). A missing/wrong
  * token gets a plain HTTP 401, not a WebSocket 101 upgrade.
+ *
+ * PHASE 24.6: optional TLS (wss://), via `tls_cert_path`/`tls_key_path`
+ * (PEM files - e.g. a Let's Encrypt certificate/key pair for real
+ * deployments, or a self-signed pair for local testing). When both are
+ * non-empty, every accepted TCP connection is wrapped in TLS
+ * (SSL_accept()) before the WebSocket handshake even begins - closes
+ * the plaintext-token exposure created by Phase 24's direction change
+ * (WebRTC viewers no longer required to be on a Tailscale tunnel, so
+ * this server is now expected to be reachable from the open internet,
+ * where the 23.4 token above would otherwise be a bearer credential
+ * sent in the clear). When either path is empty, this server runs
+ * exactly as before (plain ws://) - TLS is opt-in, not required to run
+ * this project at all (e.g. for LAN-only/Tailscale-only setups where
+ * the tunnel itself already provides transport encryption).
  */
 
 // Called once per complete JSON text message received from a client.
@@ -38,8 +52,16 @@ using signaling_message_handler_t = std::function<void(const std::string &client
 // tearing down any session state associated with that client_id.
 using signaling_disconnect_handler_t = std::function<void(const std::string &client_id)>;
 
-int signaling_server_start(uint16_t port, const std::string &token, signaling_message_handler_t handler);
+int signaling_server_start(
+    uint16_t port, const std::string &token, signaling_message_handler_t handler,
+    const std::string &tls_cert_path = "", const std::string &tls_key_path = "");
 void signaling_server_stop(void);
+
+// True if this server was started with TLS enabled (both
+// tls_cert_path/tls_key_path non-empty) - purely informational, e.g.
+// so main.cpp can print "wss://" vs "ws://" in its startup banner
+// without duplicating the "both paths non-empty" check itself.
+bool signaling_server_is_tls_enabled(void);
 
 // Registers the disconnect callback. Optional - call before
 // signaling_server_start() if used.

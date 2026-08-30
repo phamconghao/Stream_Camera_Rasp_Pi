@@ -539,7 +539,21 @@ int main(int argc, char **argv)
 
     signaling_server_set_disconnect_handler(on_signaling_disconnect);
 
-    if (signaling_server_start(signaling_port, signaling_token, on_signaling_message) < 0)
+    // PHASE 24.6: TLS for the signaling server - optional (same
+    // "off unless fully configured" pattern as 24.4's TURN env vars
+    // just below), via TLS_CERT_PATH/TLS_KEY_PATH (PEM files - a real
+    // Let's Encrypt cert/key pair for a public deployment, or a
+    // self-signed pair for local/LAN testing where the browser is
+    // told to trust it manually). Empty strings when unset simply mean
+    // "no TLS", matching signaling_server_start()'s existing default
+    // arguments - this project runs exactly as it did before Phase
+    // 24.6 if these aren't set.
+    const char *tls_cert_path = getenv("TLS_CERT_PATH");
+    const char *tls_key_path = getenv("TLS_KEY_PATH");
+
+    if (signaling_server_start(signaling_port, signaling_token, on_signaling_message,
+                                tls_cert_path != nullptr ? tls_cert_path : "",
+                                tls_key_path != nullptr ? tls_key_path : "") < 0)
     {
         return -1;
     }
@@ -587,7 +601,8 @@ int main(int argc, char **argv)
     }
 
     std::cout << "RTSP server ready at rtsp://<this-pi-ip>:" << rtsp_port << "/stream" << std::endl;
-    std::cout << "WebRTC signaling server ready at ws://<this-pi-ip>:" << signaling_port << std::endl;
+    std::cout << "WebRTC signaling server ready at " << (signaling_server_is_tls_enabled() ? "wss" : "ws")
+              << "://<this-pi-ip>:" << signaling_port << std::endl;
     std::cout << "Press ENTER to exit..." << std::endl;
 
     std::cin.get();

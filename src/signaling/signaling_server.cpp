@@ -12,6 +12,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <openssl/crypto.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #include "sha1.h"
 #include "base64.h"
@@ -34,8 +36,70 @@ static signaling_disconnect_handler_t g_disconnect_handler;
 // PHASE 23.4: see signaling_server.h's header comment.
 static std::string g_signaling_token;
 
+// PHASE 24.6: non-null iff TLS is enabled this run (both cert/key
+// paths were non-empty at signaling_server_start()) - see
+// signaling_server.h's Phase 24.6 doc comment.
+static SSL_CTX *g_ssl_ctx = nullptr;
+
+static void log_openssl_errors(const char *context)
+{
+    // Same small helper duplicated in dtls_cert.cpp/dtls_handshake.cpp
+    // - see turn_client.cpp's header comment on why this project
+    // accepts this particular kind of mechanical, non-security-logic
+    // duplication across files rather than introducing a shared
+    // "misc openssl utils" module for a three-line helper.
+    unsigned long err;
+    char buf[256];
+    while ((err = ERR_get_error()) != 0)
+    {
+        ERR_error_string_n(err, buf, sizeof(buf));
+        LOG_ERROR(TAG, "OpenSSL error (%s): %s", context, buf);
+    }
+}
+
+// PHASE 24.6: every place this file used to call recv(fd,...)/
+// send(fd,...) directly now goes through this instead - dispatches to
+// SSL_read()/SSL_write() when TLS is enabled for this connection, or
+// the same raw recv()/send() as before otherwise. `ssl == nullptr`
+// means plain TCP - every call site already had to check that
+// (implicitly, since without this struct there was nothing to check),
+// so behavior for a non-TLS server is completely unchanged.
+struct connection_io_t
+{
+    int fd = -1;
+    SSL *ssl = nullptr;
+
+    ssize_t read(void *buf, size_t len) const
+    {
+        if (ssl != nullptr)
+        {
+            int n = SSL_read(ssl, buf, static_cast<int>(len));
+            return n > 0 ? n : -1;
+        }
+        return recv(fd, buf, len, 0);
+    }
+
+    ssize_t write(const void *buf, size_t len) const
+    {
+        if (ssl != nullptr)
+        {
+            int n = SSL_write(ssl, buf, static_cast<int>(len));
+            return n > 0 ? n : -1;
+        }
+        return send(fd, buf, len, 0);
+    }
+};
+
+// client_id -> how to reach it (fd always; ssl only if this
+// connection is using TLS) - was a bare `int fd` before Phase 24.6.
+struct client_conn_t
+{
+    int fd = -1;
+    SSL *ssl = nullptr;
+};
+
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
-static std::map<std::string, int> g_clients; // client_id -> fd, for signaling_server_send()
+static std::map<std::string, client_conn_t> g_clients; // client_id -> connection, for signaling_server_send()
 
 struct connection_ctx_t
 {
@@ -194,11 +258,14 @@ static std::string extract_token_from_request_line(const std::string &block)
     return query.substr(token_pos, token_end == std::string::npos ? std::string::npos : token_end - token_pos);
 }
 
-// Reads the HTTP Upgrade request off `fd`, validates it's a WebSocket
+// Reads the HTTP Upgrade request off `io`, validates it's a WebSocket
 // handshake, and writes back the 101 Switching Protocols response.
-// Returns false (and leaves the socket for the caller to close) on
-// anything malformed or missing the required headers.
-static bool do_websocket_handshake(int fd, const std::string &client_ip)
+// Returns false (and leaves the connection for the caller to close) on
+// anything malformed or missing the required headers. PHASE 24.6: `io`
+// already has TLS applied by the time this runs (if enabled at all) -
+// this function has no idea whether it's reading/writing through TLS
+// or plain TCP, same as everything else in this file from here down.
+static bool do_websocket_handshake(const connection_io_t &io, const std::string &client_ip)
 {
     // PHASE 23.5: rejected before reading anything off the socket at
     // all - cheaper than 23.4's own token check below for a client
@@ -220,7 +287,7 @@ static bool do_websocket_handshake(int fd, const std::string &client_ip)
     size_t header_end;
     while ((header_end = buffer.find("\r\n\r\n")) == std::string::npos)
     {
-        ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+        ssize_t n = io.read(chunk, sizeof(chunk));
         if (n <= 0)
         {
             LOG_WARN(TAG, "connection from %s closed before handshake completed", client_ip.c_str());
@@ -257,7 +324,7 @@ static bool do_websocket_handshake(int fd, const std::string &client_ip)
             "HTTP/1.1 401 Unauthorized\r\n"
             "Content-Length: 0\r\n"
             "\r\n";
-        send(fd, unauthorized_response, strlen(unauthorized_response), 0);
+        io.write(unauthorized_response, strlen(unauthorized_response));
         return false;
     }
 
@@ -288,7 +355,7 @@ static bool do_websocket_handshake(int fd, const std::string &client_ip)
         "Sec-WebSocket-Accept: " + accept_value + "\r\n"
         "\r\n";
 
-    if (send(fd, response.c_str(), response.size(), 0) < 0)
+    if (io.write(response.c_str(), response.size()) < 0)
     {
         LOG_WARN(TAG, "failed to send handshake response to %s: %s", client_ip.c_str(), strerror(errno));
         return false;
@@ -430,10 +497,10 @@ static bool decode_ws_frame(std::string &buffer, uint8_t &opcode, std::string &p
 // Client registry (for signaling_server_send() from other threads)
 // ----------------------------------------------------------------------
 
-static void register_client(const std::string &client_id, int fd)
+static void register_client(const std::string &client_id, const connection_io_t &io)
 {
     pthread_mutex_lock(&g_clients_lock);
-    g_clients[client_id] = fd;
+    g_clients[client_id] = client_conn_t{io.fd, io.ssl};
     pthread_mutex_unlock(&g_clients_lock);
 }
 
@@ -448,16 +515,18 @@ bool signaling_server_send(const std::string &client_id, const std::string &json
 {
     pthread_mutex_lock(&g_clients_lock);
     auto it = g_clients.find(client_id);
-    int fd = (it != g_clients.end()) ? it->second : -1;
+    bool found = (it != g_clients.end());
+    client_conn_t conn = found ? it->second : client_conn_t{};
     pthread_mutex_unlock(&g_clients_lock);
 
-    if (fd < 0)
+    if (!found)
     {
         return false;
     }
 
+    connection_io_t io{conn.fd, conn.ssl};
     std::string frame = build_ws_frame(WS_OPCODE_TEXT, json);
-    ssize_t sent = send(fd, frame.c_str(), frame.size(), 0);
+    ssize_t sent = io.write(frame.c_str(), frame.size());
 
     if (sent < 0)
     {
@@ -479,8 +548,46 @@ static void *connection_thread_func(void *arg)
     std::string client_ip = ctx->client_ip;
     delete ctx;
 
-    if (!do_websocket_handshake(fd, client_ip))
+    connection_io_t io{fd, nullptr};
+
+    // PHASE 24.6: TLS handshake happens BEFORE anything WebSocket
+    // -related - do_websocket_handshake() below reads the HTTP Upgrade
+    // request through `io`, which must already be decrypting by then.
+    if (g_ssl_ctx != nullptr)
     {
+        io.ssl = SSL_new(g_ssl_ctx);
+        if (io.ssl == nullptr)
+        {
+            log_openssl_errors("SSL_new");
+            close(fd);
+            return nullptr;
+        }
+
+        SSL_set_fd(io.ssl, fd);
+
+        if (SSL_accept(io.ssl) <= 0)
+        {
+            // Very common/expected in practice, not just on attack
+            // traffic - e.g. a browser's OS-level "is this reachable"
+            // probe, or a health-check script, hitting the port with a
+            // plain TCP connection that never speaks TLS at all. Not
+            // logged as a warning for that reason - see the equivalent
+            // reasoning already established for auth failures on the
+            // other servers, just one level lower (TLS itself, before
+            // there's even a WebSocket handshake to fail).
+            SSL_free(io.ssl);
+            close(fd);
+            return nullptr;
+        }
+    }
+
+    if (!do_websocket_handshake(io, client_ip))
+    {
+        if (io.ssl != nullptr)
+        {
+            SSL_shutdown(io.ssl);
+            SSL_free(io.ssl);
+        }
         close(fd);
         return nullptr;
     }
@@ -491,8 +598,9 @@ static void *connection_thread_func(void *arg)
     // value is free to be reused by a brand new (and by then, distinct)
     // client_id, same as e.g. process PIDs being reused after exit.
     std::string client_id = std::to_string(fd);
-    register_client(client_id, fd);
-    LOG_INFO(TAG, "client %s connected from %s", client_id.c_str(), client_ip.c_str());
+    register_client(client_id, io);
+    LOG_INFO(TAG, "client %s connected from %s%s", client_id.c_str(), client_ip.c_str(),
+             io.ssl != nullptr ? " (TLS)" : "");
 
     std::string buffer;
     char chunk[4096];
@@ -503,7 +611,7 @@ static void *connection_thread_func(void *arg)
         std::string payload;
 
         // Drain every complete frame already buffered before calling
-        // recv() again - a single recv() can return more than one
+        // read() again - a single read can return more than one
         // frame's worth of bytes (e.g. a burst of ICE candidates sent
         // back-to-back by the browser).
         bool got_frame;
@@ -531,16 +639,21 @@ static void *connection_thread_func(void *arg)
                     // it would eventually get us disconnected.
                     {
                         std::string pong = build_ws_frame(WS_OPCODE_PONG, payload);
-                        send(fd, pong.c_str(), pong.size(), 0);
+                        io.write(pong.c_str(), pong.size());
                     }
                     break;
 
                 case WS_OPCODE_CLOSE:
                     {
                         std::string close_frame = build_ws_frame(WS_OPCODE_CLOSE, "");
-                        send(fd, close_frame.c_str(), close_frame.size(), 0);
+                        io.write(close_frame.c_str(), close_frame.size());
                     }
                     unregister_client(client_id);
+                    if (io.ssl != nullptr)
+                    {
+                        SSL_shutdown(io.ssl);
+                        SSL_free(io.ssl);
+                    }
                     close(fd);
                     LOG_INFO(TAG, "client %s closed connection", client_id.c_str());
                     if (g_disconnect_handler)
@@ -557,7 +670,7 @@ static void *connection_thread_func(void *arg)
             }
         } while (got_frame);
 
-        ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+        ssize_t n = io.read(chunk, sizeof(chunk));
         if (n <= 0)
         {
             break;
@@ -566,6 +679,11 @@ static void *connection_thread_func(void *arg)
     }
 
     unregister_client(client_id);
+    if (io.ssl != nullptr)
+    {
+        SSL_shutdown(io.ssl);
+        SSL_free(io.ssl);
+    }
     close(fd);
     LOG_INFO(TAG, "client %s disconnected", client_id.c_str());
 
@@ -626,15 +744,64 @@ void signaling_server_set_disconnect_handler(signaling_disconnect_handler_t hand
     g_disconnect_handler = handler;
 }
 
-int signaling_server_start(uint16_t port, const std::string &token, signaling_message_handler_t handler)
+bool signaling_server_is_tls_enabled(void)
+{
+    return g_ssl_ctx != nullptr;
+}
+
+int signaling_server_start(
+    uint16_t port, const std::string &token, signaling_message_handler_t handler,
+    const std::string &tls_cert_path, const std::string &tls_key_path)
 {
     g_handler = handler;
     g_signaling_token = token;
+
+    // PHASE 24.6: both paths must be non-empty to enable TLS - see
+    // signaling_server.h's doc comment. TLS_server_method() (not the
+    // deprecated SSLv23_server_method()) auto-negotiates the highest
+    // TLS version both sides support - same style already used for
+    // this project's DTLS context in dtls_handshake.cpp, just the
+    // stream-TLS method instead of DTLS_server_method().
+    if (!tls_cert_path.empty() && !tls_key_path.empty())
+    {
+        g_ssl_ctx = SSL_CTX_new(TLS_server_method());
+        if (g_ssl_ctx == nullptr)
+        {
+            log_openssl_errors("SSL_CTX_new(TLS_server_method)");
+            return -1;
+        }
+
+        if (SSL_CTX_use_certificate_chain_file(g_ssl_ctx, tls_cert_path.c_str()) <= 0 ||
+            SSL_CTX_use_PrivateKey_file(g_ssl_ctx, tls_key_path.c_str(), SSL_FILETYPE_PEM) <= 0)
+        {
+            log_openssl_errors("loading TLS cert/key");
+            LOG_ERROR(TAG, "failed to load TLS cert (%s) / key (%s)", tls_cert_path.c_str(), tls_key_path.c_str());
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = nullptr;
+            return -1;
+        }
+
+        if (SSL_CTX_check_private_key(g_ssl_ctx) != 1)
+        {
+            LOG_ERROR(TAG, "TLS certificate and private key do not match (%s / %s)",
+                      tls_cert_path.c_str(), tls_key_path.c_str());
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = nullptr;
+            return -1;
+        }
+
+        LOG_INFO(TAG, "TLS enabled (cert=%s)", tls_cert_path.c_str());
+    }
 
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_listen_fd < 0)
     {
         LOG_ERROR(TAG, "socket() failed: %s", strerror(errno));
+        if (g_ssl_ctx != nullptr)
+        {
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = nullptr;
+        }
         return -1;
     }
 
@@ -652,6 +819,11 @@ int signaling_server_start(uint16_t port, const std::string &token, signaling_me
         LOG_ERROR(TAG, "bind() failed on port %u: %s", port, strerror(errno));
         close(g_listen_fd);
         g_listen_fd = -1;
+        if (g_ssl_ctx != nullptr)
+        {
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = nullptr;
+        }
         return -1;
     }
 
@@ -660,6 +832,11 @@ int signaling_server_start(uint16_t port, const std::string &token, signaling_me
         LOG_ERROR(TAG, "listen() failed: %s", strerror(errno));
         close(g_listen_fd);
         g_listen_fd = -1;
+        if (g_ssl_ctx != nullptr)
+        {
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = nullptr;
+        }
         return -1;
     }
 
@@ -671,10 +848,15 @@ int signaling_server_start(uint16_t port, const std::string &token, signaling_me
         close(g_listen_fd);
         g_listen_fd = -1;
         g_running = false;
+        if (g_ssl_ctx != nullptr)
+        {
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = nullptr;
+        }
         return -1;
     }
 
-    LOG_INFO(TAG, "listening on port %u", port);
+    LOG_INFO(TAG, "listening on port %u (%s)", port, g_ssl_ctx != nullptr ? "wss" : "ws");
 
     return 0;
 }
@@ -697,4 +879,10 @@ void signaling_server_stop(void)
     pthread_mutex_unlock(&g_clients_lock);
 
     g_signaling_token.clear();
+
+    if (g_ssl_ctx != nullptr)
+    {
+        SSL_CTX_free(g_ssl_ctx);
+        g_ssl_ctx = nullptr;
+    }
 }
