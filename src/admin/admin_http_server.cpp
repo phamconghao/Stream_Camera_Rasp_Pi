@@ -323,7 +323,22 @@ static void handle_get_root(int fd, const std::map<std::string, std::string> &he
     replace_all(html, "%%SIGNALING_PORT%%", std::to_string(g_signaling_port));
     replace_all(html, "%%ADMIN_SESSION_ID%%", session_id);
 
-    send_response(fd, build_http_response(200, "OK", {{"Content-Type", "text/html; charset=utf-8"}}, html));
+    // Must-not-cache, including the browser's back/forward cache
+    // (bfcache): without this, clicking Logout then hitting Back can
+    // show this exact rendered page straight from the browser's own
+    // history cache - no new request, no server-side session check,
+    // so a logged-out session cookie never gets the chance to redirect
+    // to /login. `no-store` is the specific directive that disables
+    // bfcache in every major browser; the rest is defense-in-depth for
+    // older/other caches (proxies, HTTP/1.0).
+    send_response(fd, build_http_response(
+        200, "OK",
+        {
+            {"Content-Type", "text/html; charset=utf-8"},
+            {"Cache-Control", "no-store, no-cache, must-revalidate, private"},
+            {"Pragma", "no-cache"},
+        },
+        html));
 }
 
 static void handle_get_login(int fd)
