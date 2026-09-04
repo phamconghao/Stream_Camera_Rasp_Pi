@@ -388,20 +388,30 @@ int bcm2835_encoder_init(int width, int height)
 
     std::cout << "[ENC] profile set to baseline" << std::endl;
 
-    // Force level 3.1 to match what browsers' own H.264 offer entries
-    // actually declare for the Baseline PT (see the profile comment
-    // above) - setting profile alone left level at the driver's
-    // default (4.0), still higher than what was negotiated
-    // (profile-level-id=42001f = level 3.1). RFC 6184 8.2.2: without
-    // level-asymmetry-allowed=1 in the answer, a receiver is entitled
-    // to assume it will never see a level higher than what it offered,
-    // and Chrome/Edge's decoder factory can and does hold to that when
-    // deciding whether to even open a decoder for the SPS it receives -
-    // 640x480 needs nowhere near level 4.0's headroom anyway.
+    // Level must be high enough for the actual frame size or the
+    // bitstream is non-conformant: H.264 Annex A caps macroblocks/frame
+    // (MaxFS) and macroblocks/sec (MaxMBPS) per level. At 1920x1080,
+    // coded height rounds up to 1088 (68 macroblock rows) per H.264's
+    // 16x16 macroblock grid, i.e. 120x68 = 8160 MBs/frame - Level 3.1
+    // (previously used, sized for 640x480's 1200 MBs/frame) only allows
+    // MaxFS=3600, nowhere near enough. Level 4.2 comfortably covers
+    // 8160 MBs/frame @ 30fps (244800 MB/s, matching this project's
+    // fixed 30fps target - see rtp_packetizer_thread.h) with headroom
+    // (MaxMBPS=522240), vs. level 4.0's 245760 MaxMBPS being an
+    // uncomfortably tight ~0.4% margin for the same math.
+    //
+    // Because this raises the level above what browsers' own H.264
+    // offer entries declare for the Baseline PT (profile-level-id=
+    // 42001f = level 3.1), build_webrtc_sdp_answer() must also set
+    // level-asymmetry-allowed=1 in the answer's fmtp - RFC 6184 8.2.2:
+    // without it, a receiver is entitled to assume it will never see a
+    // level higher than what it offered, and Chrome/Edge's decoder
+    // factory can and does hold to that when deciding whether to even
+    // open a decoder for the SPS it receives.
     struct v4l2_control level_ctrl;
     memset(&level_ctrl, 0, sizeof(level_ctrl));
     level_ctrl.id = V4L2_CID_MPEG_VIDEO_H264_LEVEL;
-    level_ctrl.value = V4L2_MPEG_VIDEO_H264_LEVEL_3_1;
+    level_ctrl.value = V4L2_MPEG_VIDEO_H264_LEVEL_4_2;
 
     if (ioctl(g_fd, VIDIOC_S_CTRL, &level_ctrl) < 0)
     {
@@ -409,7 +419,7 @@ int bcm2835_encoder_init(int width, int height)
         return -1;
     }
 
-    std::cout << "[ENC] level set to 3.1" << std::endl;
+    std::cout << "[ENC] level set to 4.2" << std::endl;
 
     // Without this, bcm2835-codec only ever emits SPS/PPS ONCE, right
     // after this init - every later IDR (including ones force-requested
@@ -518,7 +528,7 @@ int bcm2835_encoder_encode_file(const char *input_file, const char *output_file)
         return -1;
     }
 
-    const size_t frame_size = 640 * 480 * 3 / 2; // YUV420 frame size for 640x480
+    const size_t frame_size = 1920 * 1080 * 3 / 2; // YUV420 frame size for 1920x1080
     std::vector<uint8_t> yuv_data(frame_size);
     size_t n = fread(yuv_data.data(), 1, frame_size, fp);
 

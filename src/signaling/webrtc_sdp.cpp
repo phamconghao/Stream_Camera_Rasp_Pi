@@ -222,8 +222,15 @@ std::string build_webrtc_sdp_answer(
     sdp << "a=rtpmap:" << pt << " H264/90000\r\n";
     sdp << "a=rtcp-fb:" << pt << " nack\r\n";
     sdp << "a=rtcp-fb:" << pt << " nack pli\r\n";
+    // level-asymmetry-allowed=1: this project's encoder runs at H.264
+    // level 4.2 (see bcm2835_encoder.cpp - needed for 1920x1080's
+    // macroblock count), higher than what browsers' own offer entries
+    // declare for the Baseline PT (level 3.1). Without this, RFC 6184
+    // 8.2.2 entitles the browser to assume it will never receive
+    // anything above what it offered, and Chrome/Edge's decoder
+    // factory can refuse to even open a decoder for our SPS.
     sdp << "a=fmtp:" << pt << " packetization-mode=1;profile-level-id=" << profile_level_id
-        << ";sprop-parameter-sets=" << sprop_parameter_sets << "\r\n";
+        << ";level-asymmetry-allowed=1;sprop-parameter-sets=" << sprop_parameter_sets << "\r\n";
 
     return sdp.str();
 }

@@ -124,11 +124,11 @@ int main(int argc, char **argv)
     int max_segments = (argc > 7) ? std::atoi(argv[7]) : 10;
     bool recording_disabled = (std::strcmp(recording_dir, "none") == 0);
 
-    // This pipeline is fixed at 640x480, same as the sender - see the
-    // resolution note in bcm2835_decoder.cpp for why this isn't
-    // negotiated dynamically yet.
-    const int width = 640;
-    const int height = 480;
+    // This pipeline is fixed at 1920x1080 (FHD), same as the sender -
+    // see the resolution note in bcm2835_decoder.cpp for why this
+    // isn't negotiated dynamically yet.
+    const int width = 1920;
+    const int height = 1080;
 
     g_running = true;
 

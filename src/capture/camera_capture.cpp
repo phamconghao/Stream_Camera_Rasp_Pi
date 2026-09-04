@@ -3,6 +3,7 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <map>
 #include <cstring>
 
 #include <libcamera/libcamera.h>
@@ -130,30 +131,83 @@ static void request_complete(Request *request)
         std::cout << "Plane count = " << buffer->planes().size() << std::endl;
         size_t offset = 0;
 
-        // YUV420 has 3 planes (Y, U, V). Copy each plane's DMA-buf
-        // contents into our own pool buffer back-to-back, so downstream
-        // consumers (the hardware encoder) see one contiguous YUV420
-        // buffer rather than 3 separate dma-buf fds.
+        // YUV420's 3 planes (Y, U, V) are usually sub-regions of ONE
+        // underlying dma-buf allocation, sharing the same fd with each
+        // plane at a different byte offset into it (confirmed on this
+        // hardware: all 3 planes report the same fd, with U/V offsets
+        // of ~2MB/2.5MB into it) - NOT 3 independent dma-bufs each
+        // starting at their own offset 0. mmap()'s offset argument must
+        // be page-aligned, and these per-plane offsets are not (e.g.
+        // 2073600 isn't a multiple of 4096), so each plane can't be
+        // mmap'd individually at plane.offset. Every plane sharing an
+        // fd is therefore mmap'd ONCE as a whole (offset 0, spanning
+        // the furthest byte any of its planes touches), and each
+        // plane's actual bytes are read via pointer arithmetic
+        // (base + plane.offset) into that single mapping.
+        //
+        // Getting this wrong doesn't fail loudly: mmap(fd, 0) still
+        // succeeds for every plane (it's a valid mapping, just of the
+        // wrong region), so U and V both silently ended up reading the
+        // start of the Y plane's own data instead of their real chroma
+        // bytes - bytes-identical U and V, decoded as a magenta/green
+        // split wherever Y's "luma disguised as chroma" pushed Cb/Cr
+        // away from neutral. This was the real cause of the colour-cast
+        // bug (independent of, and more severe than, the VUI/colour-
+        // space signalling gap fixed separately above).
+        std::map<int, std::pair<void *, size_t>> fd_mappings; // fd -> (mmap base, mmap length)
+
         for (size_t i = 0; i < buffer->planes().size(); i++)
         {
             const FrameBuffer::Plane &plane = buffer->planes()[i];
-            const FrameMetadata::Plane &meta_plane = meta_planes[i];
-            // Camera buffers live in a dma-buf (plane.fd), not regular
-            // heap memory - mmap it read-only to get a CPU-visible pointer.
-            void *memory = mmap(nullptr, plane.length, PROT_READ, MAP_SHARED, plane.fd.get(), 0);
-            std::cout << "Plane " << i << " length = " << buffer->planes()[i].length << std::endl;
-            
+            size_t needed = plane.offset + plane.length;
+            auto it = fd_mappings.find(plane.fd.get());
+            if (it == fd_mappings.end() || needed > it->second.second)
+            {
+                fd_mappings[plane.fd.get()] = { nullptr, needed };
+            }
+        }
+
+        bool mmap_ok = true;
+        for (auto &entry : fd_mappings)
+        {
+            void *memory = mmap(nullptr, entry.second.second, PROT_READ, MAP_SHARED, entry.first, 0);
             if (memory == MAP_FAILED)
             {
                 perror("mmap");
-                raw_frame_pool_release(frame);
-                frame = nullptr;
+                mmap_ok = false;
                 break;
             }
+            entry.second.first = memory;
+        }
 
-            memcpy(frame->data + offset, memory, meta_plane.bytesused);
-            offset += meta_plane.bytesused;
-            munmap(memory, plane.length);
+        if (!mmap_ok)
+        {
+            for (auto &entry : fd_mappings)
+            {
+                if (entry.second.first)
+                {
+                    munmap(entry.second.first, entry.second.second);
+                }
+            }
+            raw_frame_pool_release(frame);
+            frame = nullptr;
+        }
+        else
+        {
+            for (size_t i = 0; i < buffer->planes().size(); i++)
+            {
+                const FrameBuffer::Plane &plane = buffer->planes()[i];
+                const FrameMetadata::Plane &meta_plane = meta_planes[i];
+                const uint8_t *base = static_cast<const uint8_t *>(fd_mappings[plane.fd.get()].first);
+
+                memcpy(frame->data + offset, base + plane.offset, meta_plane.bytesused);
+                offset += meta_plane.bytesused;
+            }
+
+            for (auto &entry : fd_mappings)
+            {
+                munmap(entry.second.first, entry.second.second);
+            }
         }
 
         if (!frame)
@@ -243,13 +297,39 @@ int camera_capture_init(void)
         return -1;
     }
 
-    // Set resolution - fixed 640x480 YUV420 for now. Must match
+    // Set resolution - fixed 1920x1080 (FHD) YUV420 for now. Must match
     // MAX_RAW_FRAME_SIZE in raw_frame.h and the resolution assumed by
     // bcm2835_encoder. Not yet configurable at runtime.
     StreamConfiguration &cfg = g_config->at(0);
-    cfg.size.width = 640;
-    cfg.size.height = 480;
+    cfg.size.width = 1920;
+    cfg.size.height = 1080;
     cfg.pixelFormat = formats::YUV420;
+
+    // Not left unset: without an explicit request here, libcamera
+    // defaults StreamRole::Viewfinder to ColorSpace::Sycc (sRGB
+    // primaries, Rec601 matrix, FULL range 0-255 - confirmed via
+    // ColorSpace::toString() logging on this hardware). The BCM2835
+    // hardware H.264 encoder (bcm2835_encoder.cpp) does not embed any
+    // colour_description into the H.264 SPS it produces regardless of
+    // what's requested on its V4L2 OUTPUT/CAPTURE queues (confirmed
+    // empirically: ffmpeg's trace_headers bitstream filter shows
+    // video_signal_type_present_flag=0 in every SPS this encoder
+    // emits, even after setting V4L2_COLORSPACE_JPEG on both queues -
+    // that driver simply doesn't support signalling it). With no VUI
+    // colour info at all, browsers/WebRTC decoders fall back to
+    // guessing - the standard guess for HD (>=720 lines) content is
+    // limited-range BT.709, per H.264/H.273's own informative default
+    // and every mainstream decoder's convention (ffmpeg, Chrome's
+    // media pipeline, etc). Requesting Rec709 here (limited-range
+    // BT.709, matching libcamera's own named preset) instead of the
+    // full-range-Rec601 default makes the actual pixel bytes equal
+    // what those decoders assume in the absence of VUI, which is the
+    // only lever available given the encoder can't be made to signal
+    // the truth explicitly. This was the root cause of the reported
+    // blue/green colour-cast bug: full-range source samples decoded
+    // as if limited-range (previously would have also mismatched on
+    // matrix at this resolution).
+    cfg.colorSpace = ColorSpace::Rec709;
 
     // Validate
     CameraConfiguration::Status status = g_config->validate();
@@ -265,6 +345,13 @@ int camera_capture_init(void)
         std::cerr << "[CAPTURE] configure failed" << std::endl;
         return -1;
     }
+
+    // Logged (not just asserted in a comment) because libcamera's
+    // validate()/configure() are free to silently adjust an unsupported
+    // colorSpace request to whatever the pipeline handler actually
+    // supports - worth being able to confirm from the logs that the
+    // negotiated value still matches what bcm2835_encoder.cpp assumes.
+    std::cout << "[CAPTURE] negotiated colorSpace = " << ColorSpace::toString(cfg.colorSpace) << std::endl;
 
     // Save stream pointer
     g_stream = cfg.stream();

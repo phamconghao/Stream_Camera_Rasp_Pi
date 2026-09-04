@@ -34,7 +34,7 @@
  * V4L2_EVENT_SOURCE_CHANGE, which normally fires after the driver has
  * parsed the stream's SPS/PPS). Instead both queues' formats are set
  * up-front from the width/height the caller already knows (this
- * pipeline is 640x480 end-to-end, fixed at compile time on the sender
+ * pipeline is 1920x1080 end-to-end, fixed at compile time on the sender
  * side too - see bcm2835_encoder_encode_file()). Handling a stream
  * whose resolution isn't known ahead of time is a known limitation,
  * left for when RTSP/SDP-negotiated resolution is added.

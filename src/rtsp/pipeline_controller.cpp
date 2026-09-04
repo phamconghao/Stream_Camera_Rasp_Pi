@@ -40,7 +40,7 @@ int pipeline_controller_init(void)
     if (webrtc_rtp_packet_pool_init() < 0) return -1;
     if (webrtc_rtp_packet_queue_init() < 0) return -1;
     if (camera_capture_init() < 0) return -1;
-    if (bcm2835_encoder_init(640, 480) < 0) return -1;
+    if (bcm2835_encoder_init(1920, 1080) < 0) return -1;
 
     // This cache lives for the whole process lifetime, NOT toggled
     // per PLAY/TEARDOWN like the thread start/stop below - a DESCRIBE
