@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <cstring>
+#include <utility>
 
 #include <libcamera/libcamera.h>
 
@@ -54,6 +55,23 @@ static std::vector<std::unique_ptr<Request>> g_requests;
 // from every other thread's running flag, following the same convention
 // as encoder_thread/rtp_packetizer_thread/udp_sender_thread.
 static bool g_capture_running = false;
+
+// Mirrors a plane left-right in place: reverses each row's bytes
+// independently (not the whole buffer - that would rotate 180 degrees
+// instead, flipping up/down too). Assumes no row stride padding beyond
+// width, true for this hardware's Y/U/V planes at 1920x1080 YUV420, per
+// the mmap layout confirmed above.
+static void hflip_inplace(uint8_t *data, size_t width, size_t height)
+{
+    for (size_t row = 0; row < height; row++)
+    {
+        uint8_t *line = data + row * width;
+        for (size_t i = 0, j = width - 1; i < j; i++, j--)
+        {
+            std::swap(line[i], line[j]);
+        }
+    }
+}
 
 static uint64_t g_frame_count = 0;
 static bool g_dumped = false; // true after the one-shot debug dump below has fired
@@ -201,6 +219,15 @@ static void request_complete(Request *request)
                 const uint8_t *base = static_cast<const uint8_t *>(fd_mappings[plane.fd.get()].first);
 
                 memcpy(frame->data + offset, base + plane.offset, meta_plane.bytesused);
+
+                // Plane 0 is full-res Y (1920x1080); planes 1/2 are the
+                // 4:2:0 subsampled U/V chroma planes (960x540) - fixed
+                // sizes matching the hardcoded 1920x1080 YUV420 capture
+                // resolution set in camera_capture_init() above.
+                size_t plane_width = (i == 0) ? 1920 : 960;
+                size_t plane_height = (i == 0) ? 1080 : 540;
+                hflip_inplace(frame->data + offset, plane_width, plane_height);
+
                 offset += meta_plane.bytesused;
             }
 
@@ -330,6 +357,15 @@ int camera_capture_init(void)
     // as if limited-range (previously would have also mismatched on
     // matrix at this resolution).
     cfg.colorSpace = ColorSpace::Rec709;
+
+    // NOTE: setting g_config->orientation (Rotate180/Rotate180Mirror/etc)
+    // was tried here and had zero effect on this hardware - this sensor's
+    // pipeline handler doesn't honour libcamera's orientation/Transform
+    // request, so validate() silently keeps it at Identity. The
+    // left-right mirror fix this camera's mounting needs is instead done
+    // in software in request_complete() below (hflip_inplace), by
+    // reversing each plane's rows after they're copied out of the DMA
+    // buffer.
 
     // Validate
     CameraConfiguration::Status status = g_config->validate();
