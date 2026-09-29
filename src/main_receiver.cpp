@@ -19,6 +19,7 @@
 #include "circular_h264_writer.h"
 #include "rtcp_receiver_thread.h"
 #include "rtcp_receiver_stats.h"
+#include "project_config.h"
 #include <cstring>
 
 /**
@@ -124,11 +125,11 @@ int main(int argc, char **argv)
     int max_segments = (argc > 7) ? std::atoi(argv[7]) : 10;
     bool recording_disabled = (std::strcmp(recording_dir, "none") == 0);
 
-    // This pipeline is fixed at 1920x1080 (FHD), same as the sender -
-    // see the resolution note in bcm2835_decoder.cpp for why this
-    // isn't negotiated dynamically yet.
-    const int width = 1920;
-    const int height = 1080;
+    // This pipeline is fixed at CAMERA_WIDTH x CAMERA_HEIGHT (project_
+    // config.h), same as the sender - see the resolution note in
+    // bcm2835_decoder.cpp for why this isn't negotiated dynamically yet.
+    const int width = CAMERA_WIDTH;
+    const int height = CAMERA_HEIGHT;
 
     g_running = true;
 

@@ -12,6 +12,7 @@
 #include "camera_capture.h"
 #include "raw_frame_pool.h"
 #include "raw_frame_queue.h"
+#include "project_config.h"
 
 /**
  * ============================================================================
@@ -324,12 +325,12 @@ int camera_capture_init(void)
         return -1;
     }
 
-    // Set resolution - fixed 1920x1080 (FHD) YUV420 for now. Must match
-    // MAX_RAW_FRAME_SIZE in raw_frame.h and the resolution assumed by
-    // bcm2835_encoder. Not yet configurable at runtime.
+    // Set resolution - CAMERA_WIDTH/CAMERA_HEIGHT (project_config.h) YUV420,
+    // fixed for now. Must match MAX_RAW_FRAME_SIZE in raw_frame.h and the
+    // resolution assumed by bcm2835_encoder. Not yet configurable at runtime.
     StreamConfiguration &cfg = g_config->at(0);
-    cfg.size.width = 1920;
-    cfg.size.height = 1080;
+    cfg.size.width = CAMERA_WIDTH;
+    cfg.size.height = CAMERA_HEIGHT;
     cfg.pixelFormat = formats::YUV420;
 
     // Not left unset: without an explicit request here, libcamera

@@ -12,6 +12,7 @@
 #include "time_utils.h"
 #include "hmac.h"
 #include "auth_failure_log.h"
+#include "project_config.h"
 #include "log.h"
 
 static const char *TAG = "CTRL_LISTEN";
@@ -67,18 +68,12 @@ static void log_auth_failure(const char *what)
 // receiver-side file.
 static constexpr const char *STATS_PATH = "sender_stats.json";
 
-/**
- * Bitrate tiers for the adaptive-bitrate extension. Deliberately coarse
- * (3 steps) and hysteresis-free simplicity over a smooth/continuous
- * curve: a real congestion-control algorithm (e.g. something GCC-like)
- * is a whole project on its own - the goal here is "visibly react to
- * bad network conditions within a couple seconds", not optimal
- * rate-distortion tuning.
- */
-static constexpr uint32_t BITRATE_HIGH_BPS = 2000000; // loss < 1%
-static constexpr uint32_t BITRATE_MEDIUM_BPS = 1000000; // 1% <= loss < 5%
-static constexpr uint32_t BITRATE_LOW_BPS = 500000; // loss >= 5%
-
+// Bitrate tiers for the adaptive-bitrate extension (BITRATE_HIGH/MEDIUM/
+// LOW_BPS - see project_config.h). Deliberately coarse (3 steps) and
+// hysteresis-free simplicity over a smooth/continuous curve: a real
+// congestion-control algorithm (e.g. something GCC-like) is a whole
+// project on its own - the goal here is "visibly react to bad network
+// conditions within a couple seconds", not optimal rate-distortion tuning.
 static constexpr uint32_t LOSS_PERMILLE_MEDIUM_THRESHOLD = 10; // 1.0%
 static constexpr uint32_t LOSS_PERMILLE_LOW_THRESHOLD = 50;    // 5.0%
 

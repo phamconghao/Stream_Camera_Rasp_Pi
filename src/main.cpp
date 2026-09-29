@@ -28,6 +28,7 @@
 #include "admin_session.h"
 #include "admin_http_server.h"
 #include "time_utils.h"
+#include "project_config.h"
 #include "log.h"
 
 #include <map>
@@ -504,21 +505,21 @@ int main(int argc, char **argv)
 
     // Control channel port this sender listens on for keyframe-request
     // datagrams from the receiver (see control_listener_thread.h).
-    uint16_t control_port = (argc > 1) ? static_cast<uint16_t>(std::atoi(argv[1])) : 5005;
+    uint16_t control_port = (argc > 1) ? static_cast<uint16_t>(std::atoi(argv[1])) : DEFAULT_CONTROL_PORT;
 
     // TCP port the RTSP control plane listens on.
-    uint16_t rtsp_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 8554;
+    uint16_t rtsp_port = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : DEFAULT_RTSP_PORT;
 
     // TCP port the WebRTC signaling (WebSocket) server listens on
     // independent of rtsp_port above.
-    uint16_t signaling_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : 8765;
+    uint16_t signaling_port = (argc > 3) ? static_cast<uint16_t>(std::atoi(argv[3])) : DEFAULT_SIGNALING_PORT;
 
     // TCP port the admin login/dashboard HTTP server listens on -
     // defaults to 80 so "type the Pi's bare IP into a browser" works
     // without a port number, per the plan behind this feature. Needs
     // CAP_NET_BIND_SERVICE to bind as this project's non-root user -
     // see admin_http_server.cpp's EACCES handling for the exact command.
-    uint16_t admin_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : 80;
+    uint16_t admin_port = (argc > 4) ? static_cast<uint16_t>(std::atoi(argv[4])) : DEFAULT_ADMIN_PORT;
 
     // PHASE 23.2: control-channel HMAC secret - deliberately an env
     // var, not a positional argv (argv is visible to any local user via

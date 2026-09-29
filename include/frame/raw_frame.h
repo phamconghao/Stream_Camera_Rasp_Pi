@@ -5,13 +5,16 @@
 #include <stddef.h>
 #include <atomic>
 
+#include "project_config.h"
+
 /**
  * ============================================================================
  * PIPELINE STAGE: Camera -> [Capture Thread] -> Raw Frame Pool/Queue -> Encoder
  * ============================================================================
  *
  * raw_frame_t represents ONE uncompressed video frame straight out of the
- * camera (YUV420 planar, 1920x1080 FHD), before H.264 encoding.
+ * camera (YUV420 planar, CAMERA_WIDTH x CAMERA_HEIGHT), before H.264
+ * encoding.
  *
  * Lifecycle:
  *   1. camera_capture's libcamera callback copies a captured frame's bytes
@@ -21,9 +24,9 @@
  *      H.264 encoder (bcm2835_encoder), then releases it back to the pool.
  */
 
-// 1920x1080 YUV420 (4:2:0): Y plane is w*h bytes, U and V planes are
-// (w/2)*(h/2) bytes each -> total = w*h + 2*(w*h/4) = w*h*3/2.
-#define MAX_RAW_FRAME_SIZE (1920 * 1080 * 3 / 2)
+// YUV420 (4:2:0): Y plane is w*h bytes, U and V planes are (w/2)*(h/2)
+// bytes each -> total = w*h + 2*(w*h/4) = w*h*3/2.
+#define MAX_RAW_FRAME_SIZE (CAMERA_WIDTH * CAMERA_HEIGHT * 3 / 2)
 
 typedef struct
 {
